@@ -22,5 +22,5 @@
 * **Success Metric:** The terminal should show the LLM reasoning to find the midpoint, calling `calculate_midpoint`, taking the result to call `search_nearby_places`, and outputting a final answer.
 
 ## Step 5: The Handshake (Cross-Learning Sync)
-* **Action:** Once the local `vllm/vllm-openai-rocm:latest` server is running on the AMD GPU, swap the placeholder Base URL for the local endpoint (e.g., `http://localhost:8001/v1`) and run the test again[.
+* **Action:** Once the local `vllm/vllm-openai-rocm:latest` server is running on the AMD GPU, swap the placeholder Base URL for the local endpoint (e.g., `http://localhost:8001/v1`) and run the test again.
 * **Success Metric:** If the script runs successfully, the team has proven core inference runs entirely locally on an AMD Radeon GPU.
