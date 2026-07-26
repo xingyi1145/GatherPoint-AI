@@ -18,13 +18,12 @@ from langchain_openai import ChatOpenAI
 # once your teammate's local AMD GPU vLLM server is ready.
 # Keep the API_KEY value pointed at that server's expected auth token.
 # -----------------------------------------------------------------------------
-BASE_URL = "https://your-openai-compatible-endpoint.example/v1"
-API_KEY = "YOUR_API_KEY_HERE"
-MODEL_NAME = "qwen-plus"
-
+BASE_URL = "http://127.0.0.1:8001/v1"  # Note: ensure VSCode port forwarding is active if running locally
+API_KEY = "EMPTY"  # vLLM local endpoints usually accept any string here unless auth is explicitly configured
+MODEL_NAME = "gatherpoint-local"
 
 @tool
-def calculate_midpoint(locations: list[str]) -> str:
+def calculate_midpoint(locations: str) -> str:
     """Calculate a meetup midpoint for a list of locations.
 
     Use this tool when the user provides two or more place names, neighborhoods,
@@ -32,16 +31,25 @@ def calculate_midpoint(locations: list[str]) -> str:
     anchor the planning search.
 
     Input format:
-    - Pass a JSON array or Python-style list of location strings.
-    - Example: ["Alice is downtown", "Bob is in the suburbs"]
+    - Pass a JSON array string of locations.
+    - Example: '["Alice is downtown", "Bob is in the suburbs"]'
 
     Output:
     - Always returns the mock coordinate string "43.65°N, 79.38°W".
-    - This is a proof-of-concept stub, not a real geocoder.
     """
+    
+    # 1. Safely try to parse the string into a list
+    try:
+        parsed_locations = json.loads(locations)
+        if not isinstance(parsed_locations, list):
+            parsed_locations = [locations] # Fallback if it's just a raw string
+    except json.JSONDecodeError:
+        # Fallback if the LLM forgets JSON formatting and just uses commas
+        parsed_locations = [loc.strip() for loc in locations.split(',')]
 
+    # 2. Process the list safely
     normalized_locations: list[str] = []
-    for location in locations:
+    for location in parsed_locations:
         normalized_locations.append(str(location).strip())
 
     _ = normalized_locations
@@ -49,27 +57,28 @@ def calculate_midpoint(locations: list[str]) -> str:
 
 
 @tool
-def search_nearby_places(center_coordinate: str, query: str) -> str:
+def search_nearby_places(input_string: str) -> str:
     """Search for nearby places around a center coordinate.
 
     Use this tool after a midpoint has been found and the agent needs candidate
     meetup spots near that coordinate.
 
     Input format:
-    - center_coordinate: a coordinate string such as "43.65°N, 79.38°W"
-    - query: the type of place to search for, such as "vegan restaurant"
+    - A single string containing both the coordinate and the query.
+    - Example: '43.65°N, 79.38°W, vegan restaurant'
 
     Output:
     - Always returns a hardcoded JSON string with two mock restaurants.
     - This is a proof-of-concept stub, not a real place search.
     """
 
-    _ = center_coordinate
-    _ = query
+    # For Phase 1, we accept the raw string the LLM generates and immediately 
+    # return our hardcoded success payload to prove the ReAct loop finishes.
+    _ = input_string
 
     results = {
-        "center_coordinate": center_coordinate,
-        "query": query,
+        "center_coordinate": "43.65°N, 79.38°W",
+        "query": "vegan restaurant",
         "results": [
             {
                 "name": "Green Leaf Vegan",
