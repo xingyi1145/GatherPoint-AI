@@ -6,12 +6,11 @@ import os
 import re
 from math import radians, cos, sin, asin, sqrt, degrees, atan2
 from dotenv import load_dotenv
+
 load_dotenv()
 API_KEY = os.getenv("GOOGLE_API_KEY")
 if not API_KEY:
-    raise RuntimeError(
-        "❌ Google API not found!\n"
-    )
+    raise RuntimeError("Google API key not found. Set GOOGLE_API_KEY in your .env file.")
 gmaps = googlemaps.Client(key=API_KEY)
 
 # -------------------- Geometric Utility Functions (API-independent) --------------------
@@ -89,11 +88,6 @@ def _point_in_polygon(point, polygon):
 # -------------------- Isochrone API Calls --------------------
 
 ISOCHRONE_API_URL = "https://isochrones.googleapis.com/v1/isochrones:generate"
-
-# ISOCHRONE_API_KEY reuses the existing API_KEY
-API_KEY = 'AIzaSyCnw9D0WUqrs_ZbZkjRGnoJjgnX6XNHOKs'
-gmaps = googlemaps.Client(key=API_KEY)
-
 
 def preProcess(user_enters: list) -> list:
     """
