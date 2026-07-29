@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import ast
-import json
-from typing import Any
-
 from langchain.agents import AgentExecutor
 from langchain.agents.react.agent import create_react_agent
 from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+
+from google_api_based_gis_tools import full_pipeline
 
 
 # -----------------------------------------------------------------------------
@@ -23,76 +21,47 @@ API_KEY = "EMPTY"  # vLLM local endpoints usually accept any string here unless 
 MODEL_NAME = "gatherpoint-local"
 
 @tool
-def calculate_midpoint(locations: str) -> str:
-    """Calculate a meetup midpoint for a list of locations.
+def find_optimal_meeting_spots(
+    user_addresses: list[str],
+    transport_modes: list[str],
+    place_type: str,
+) -> str:
+    """Find the best meetup recommendations for multiple participants.
 
-    Use this tool when the user provides two or more place names, neighborhoods,
-    or rough location descriptions and wants a single midpoint coordinate to
-    anchor the planning search.
+    Use this tool when the user has provided the full set of participant
+    locations and wants a practical meeting suggestion. Pass one list item per
+    participant in `user_addresses`, and keep `transport_modes` aligned by
+    index with the same participant order.
 
-    Input format:
-    - Pass a JSON array string of locations.
-    - Example: '["Alice is downtown", "Bob is in the suburbs"]'
+    Arguments:
+    - user_addresses: a list of raw address strings or place descriptions.
+      Example: ["Union Station, Toronto", "Yonge and Bloor, Toronto"]
+    - transport_modes: a list of travel modes for each address.
+      Supported values are DRIVE, WALK, BICYCLE, and TRANSIT.
+      Example: ["WALK", "BICYCLE"]. If the user does not specify a mode,
+      the caller should supply "DRIVE" for that participant.
+    - place_type: the venue category to recommend, such as "cafe",
+      "restaurant", "co-working space", or "park".
 
-    Output:
-    - Always returns the mock coordinate string "43.65°N, 79.38°W".
+    Returns:
+    - On success, returns the `ai_text` field from the GIS pipeline.
+    - If the pipeline reports an error, returns that exact error string.
+    - If an exception is raised, returns a readable error message for the LLM.
     """
-    
-    # 1. Safely try to parse the string into a list
+
     try:
-        parsed_locations = json.loads(locations)
-        if not isinstance(parsed_locations, list):
-            parsed_locations = [locations] # Fallback if it's just a raw string
-    except json.JSONDecodeError:
-        # Fallback if the LLM forgets JSON formatting and just uses commas
-        parsed_locations = [loc.strip() for loc in locations.split(',')]
-
-    # 2. Process the list safely
-    normalized_locations: list[str] = []
-    for location in parsed_locations:
-        normalized_locations.append(str(location).strip())
-
-    _ = normalized_locations
-    return "43.65°N, 79.38°W"
-
-
-@tool
-def search_nearby_places(input_string: str) -> str:
-    """Search for nearby places around a center coordinate.
-
-    Use this tool after a midpoint has been found and the agent needs candidate
-    meetup spots near that coordinate.
-
-    Input format:
-    - A single string containing both the coordinate and the query.
-    - Example: '43.65°N, 79.38°W, vegan restaurant'
-
-    Output:
-    - Always returns a hardcoded JSON string with two mock restaurants.
-    - This is a proof-of-concept stub, not a real place search.
-    """
-
-    # For Phase 1, we accept the raw string the LLM generates and immediately 
-    # return our hardcoded success payload to prove the ReAct loop finishes.
-    _ = input_string
-
-    results = {
-        "center_coordinate": "43.65°N, 79.38°W",
-        "query": "vegan restaurant",
-        "results": [
-            {
-                "name": "Green Leaf Vegan",
-                "address": "123 Queen St W, Toronto, ON",
-                "rating": 4.8,
-            },
-            {
-                "name": "Plant Power Bites",
-                "address": "456 King St W, Toronto, ON",
-                "rating": 4.6,
-            },
-        ],
-    }
-    return json.dumps(results, ensure_ascii=False)
+        result = full_pipeline(
+            user_addresses=user_addresses,
+            transport_modes=transport_modes,
+            place_type=place_type,
+        )
+        if isinstance(result, dict) and "error" in result:
+            return str(result["error"])
+        if isinstance(result, dict) and "ai_text" in result:
+            return str(result["ai_text"])
+        return "Error executing GIS tool: Pipeline returned an unexpected response. Please check your inputs and try again."
+    except Exception as e:
+        return f"Error executing GIS tool: {str(e)}. Please check your inputs and try again."
 
 
 PROMPT = PromptTemplate.from_template(
@@ -114,10 +83,16 @@ Thought: I now know the final answer
 Final Answer: the answer to the user
 
 Important rules:
-- If the user mentions multiple people or locations, first use calculate_midpoint.
-- After you have a midpoint, use search_nearby_places for a relevant venue type.
-- When a tool takes multiple fields, write Action Input as JSON.
-- Keep the reasoning concise and focused on the next decision.
+- Extract all user addresses and their respective transport modes from the user's request.
+- Accept transport modes such as DRIVE, WALK, BICYCLE, or TRANSIT.
+- If a transport mode is not specified for a person, default that person's mode to DRIVE.
+- Extract the venue type the user wants, such as cafe or restaurant.
+- When calling find_optimal_meeting_spots, Action Input must be a valid JSON object with exactly these keys: user_addresses, transport_modes, and place_type.
+- Use JSON arrays for user_addresses and transport_modes.
+- Do not write key=value pairs, YAML, bullets, or prose in Action Input.
+- Example Action Input: {{"user_addresses": ["Union Station, Toronto", "Yonge and Bloor, Toronto"], "transport_modes": ["WALK", "BICYCLE"], "place_type": "cafe"}}
+- Use find_optimal_meeting_spots to get the recommendation.
+- Return the tool result directly in the Final Answer.
 
 Question: {input}
 Thought:{agent_scratchpad}"""
@@ -132,7 +107,7 @@ def build_agent() -> AgentExecutor:
         temperature=0,
     )
 
-    tools = [calculate_midpoint, search_nearby_places]
+    tools = [find_optimal_meeting_spots]
     agent = create_react_agent(llm=llm, tools=tools, prompt=PROMPT)
 
     return AgentExecutor(
@@ -147,7 +122,7 @@ def build_agent() -> AgentExecutor:
 def main() -> None:
     executor = build_agent()
 
-    prompt = "Alice is downtown, Bob is in the suburbs. Find a vegan restaurant midway between them."
+    prompt = "Alice is at Union Station, Toronto and will WALK. Bob is at Yonge and Bloor, Toronto and will BICYCLE. Find a cafe for them to meet at."
     result = executor.invoke({"input": prompt})
 
     print("\n=== Final Result ===")
