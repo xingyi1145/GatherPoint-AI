@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import json
 from langchain.agents import AgentExecutor
 from langchain.agents.react.agent import create_react_agent
 from langchain_core.prompts import PromptTemplate
@@ -21,81 +21,70 @@ API_KEY = "EMPTY"  # vLLM local endpoints usually accept any string here unless 
 MODEL_NAME = "gatherpoint-local"
 
 @tool
-def find_optimal_meeting_spots(
-    user_addresses: list[str],
-    transport_modes: list[str],
-    place_type: str,
-) -> str:
+def find_optimal_meeting_spots(input_json_str: str) -> str:
     """Find the best meetup recommendations for multiple participants.
 
     Use this tool when the user has provided the full set of participant
-    locations and wants a practical meeting suggestion. Pass one list item per
-    participant in `user_addresses`, and keep `transport_modes` aligned by
-    index with the same participant order.
+    locations and wants a practical meeting suggestion. 
 
-    Arguments:
-    - user_addresses: a list of raw address strings or place descriptions.
-      Example: ["Union Station, Toronto", "Yonge and Bloor, Toronto"]
-    - transport_modes: a list of travel modes for each address.
-      Supported values are DRIVE, WALK, BICYCLE, and TRANSIT.
-      Example: ["WALK", "BICYCLE"]. If the user does not specify a mode,
-      the caller should supply "DRIVE" for that participant.
-    - place_type: the venue category to recommend, such as "cafe",
-      "restaurant", "co-working space", or "park".
-
-    Returns:
-    - On success, returns the `ai_text` field from the GIS pipeline.
-    - If the pipeline reports an error, returns that exact error string.
-    - If an exception is raised, returns a readable error message for the LLM.
+    Input format:
+    - A single JSON string with exactly these keys: user_addresses, transport_modes, and place_type.
+    - Example: '{"user_addresses": ["Union Station, Toronto", "Yonge and Bloor"], "transport_modes": ["WALK", "BICYCLE"], "place_type": "cafe"}'
     """
-
     try:
-        result = full_pipeline(
-            user_addresses=user_addresses,
-            transport_modes=transport_modes,
-            place_type=place_type,
-        )
+        # 1. Clean and safely parse the JSON string provided by the LLM
+        clean_str = input_json_str.strip().strip("'").strip('"')
+        args = json.loads(clean_str)
+        
+        user_addresses = args.get("user_addresses", [])
+        transport_modes = args.get("transport_modes", [])
+        place_type = args.get("place_type", "cafe")
+
+        # 2. Call your teammate's real GIS pipeline
+        result = full_pipeline(user_addresses, transport_modes, place_type)
+
+        # 3. Handle pipeline errors gracefully (Feeding them back to the LLM)
         if isinstance(result, dict) and "error" in result:
-            return str(result["error"])
-        if isinstance(result, dict) and "ai_text" in result:
-            return str(result["ai_text"])
-        return "Error executing GIS tool: Pipeline returned an unexpected response. Please check your inputs and try again."
+             return f"Observation: API Error - {result['error']}. Please try adjusting your parameters."
+        
+        # 4. Return success, but slice off the confusing conversational prompt at the end
+        final_text = result.get("ai_text", str(result))
+        if "Based on the above information" in final_text:
+            final_text = final_text.split("Based on the above information")[0]
+        
+        return final_text
+
+    except json.JSONDecodeError:
+        return "Observation: Error parsing input. You must provide a valid JSON string with 'user_addresses', 'transport_modes', and 'place_type'."
     except Exception as e:
-        return f"Error executing GIS tool: {str(e)}. Please check your inputs and try again."
+        return f"Observation: Error executing GIS tool: {str(e)}. Please check your inputs and try again."
 
 
 PROMPT = PromptTemplate.from_template(
-    """You are a practical meetup-planning assistant.
+    """You are a helpful meetup planning assistant. 
+    You have access to the following tools:
+    {tools}
+    
+    Rules:
+    - Extract all user addresses.
+    - Extract transport modes. Default to DRIVE if missing.
+    - Extract the venue type (place_type).
+    - When calling find_optimal_meeting_spots, Action Input must be a valid JSON object. Example: {{"user_addresses": ["Union Station, Toronto"], "transport_modes": ["WALK"], "place_type": "cafe"}}
+    - CRITICAL STOPPING RULE: Once you receive the list of recommended places from find_optimal_meeting_spots, DO NOT use any more tools. 
+    - You must immediately output "Final Answer: " followed by a friendly summary of the top 2 recommended spots for the user.
 
-You have access to the following tools:
+    Use the following format:
+    Question: the input question you must answer
+    Thought: you should always think about what to do
+    Action: the action to take, should be one of [{tool_names}]
+    Action Input: the input to the action
+    Observation: the result of the action
+    ... (this Thought/Action/Action Input/Observation can repeat N times)
+    Thought: I now know the final answer
+    Final Answer: the final answer to the original input question
 
-{tools}
-
-Use this exact format for every step:
-
-Question: the user's request
-Thought: think about the best next step
-Action: one of [{tool_names}]
-Action Input: the tool input
-Observation: the tool result
-... repeat Thought / Action / Action Input / Observation as needed ...
-Thought: I now know the final answer
-Final Answer: the answer to the user
-
-Important rules:
-- Extract all user addresses and their respective transport modes from the user's request.
-- Accept transport modes such as DRIVE, WALK, BICYCLE, or TRANSIT.
-- If a transport mode is not specified for a person, default that person's mode to DRIVE.
-- Extract the venue type the user wants, such as cafe or restaurant.
-- When calling find_optimal_meeting_spots, Action Input must be a valid JSON object with exactly these keys: user_addresses, transport_modes, and place_type.
-- Use JSON arrays for user_addresses and transport_modes.
-- Do not write key=value pairs, YAML, bullets, or prose in Action Input.
-- Example Action Input: {{"user_addresses": ["Union Station, Toronto", "Yonge and Bloor, Toronto"], "transport_modes": ["WALK", "BICYCLE"], "place_type": "cafe"}}
-- Use find_optimal_meeting_spots to get the recommendation.
-- Return the tool result directly in the Final Answer.
-
-Question: {input}
-Thought:{agent_scratchpad}"""
+    Question: {input}
+    Thought:{agent_scratchpad}"""
 )
 
 
