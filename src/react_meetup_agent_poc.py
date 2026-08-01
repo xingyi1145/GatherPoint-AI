@@ -24,30 +24,26 @@ MODEL_NAME = "gatherpoint-local"
 def find_optimal_meeting_spots(input_json_str: str) -> str:
     """Find the best meetup recommendations for multiple participants.
 
-    Use this tool when the user has provided the full set of participant
-    locations and wants a practical meeting suggestion. 
-
     Input format:
-    - A single JSON string with exactly these keys: user_addresses, transport_modes, and place_type.
-    - Example: '{"user_addresses": ["Union Station, Toronto", "Yonge and Bloor"], "transport_modes": ["WALK", "BICYCLE"], "place_type": "cafe"}'
+    - A single JSON string with exactly these keys: user_addresses, transport_modes, place_type, and travel_time.
+    - Example: '{"user_addresses": ["Union Station", "Yonge and Bloor"], "transport_modes": ["WALK", "BICYCLE"], "place_type": "cafe", "travel_time": "30m"}'
     """
     try:
-        # 1. Clean and safely parse the JSON string provided by the LLM
         clean_str = input_json_str.strip().strip("'").strip('"')
         args = json.loads(clean_str)
         
         user_addresses = args.get("user_addresses", [])
         transport_modes = args.get("transport_modes", [])
         place_type = args.get("place_type", "cafe")
+        # Extract travel_time, default to 30m
+        travel_time = args.get("travel_time", "30m")
 
-        # 2. Call your teammate's real GIS pipeline
-        result = full_pipeline(user_addresses, transport_modes, place_type)
+        # Pass travel_time to the pipeline
+        result = full_pipeline(user_addresses, transport_modes, place_type, travel_time)
 
-        # 3. Handle pipeline errors gracefully (Feeding them back to the LLM)
         if isinstance(result, dict) and "error" in result:
-             return f"Observation: API Error - {result['error']}. Please try adjusting your parameters."
+             return f"Observation: API Error - {result['error']}. Please try adjusting your parameters, such as increasing the travel_time."
         
-        # 4. Return success, but slice off the confusing conversational prompt at the end
         final_text = result.get("ai_text", str(result))
         if "Based on the above information" in final_text:
             final_text = final_text.split("Based on the above information")[0]
@@ -69,8 +65,15 @@ PROMPT = PromptTemplate.from_template(
     - Extract all user addresses.
     - Extract transport modes. Default to DRIVE if missing.
     - Extract the venue type (place_type).
-    - When calling find_optimal_meeting_spots, Action Input must be a valid JSON object. Example: {{"user_addresses": ["Union Station, Toronto"], "transport_modes": ["WALK"], "place_type": "cafe"}}
-    - CRITICAL STOPPING RULE: Once you receive the list of recommended places from find_optimal_meeting_spots, DO NOT use any more tools. 
+    - Default travel_time is "30m".
+    - When calling find_optimal_meeting_spots, Action Input must be a valid JSON object. Example: {{"user_addresses": ["Union Station, Toronto"], "transport_modes": ["WALK"], "place_type": "cafe", "travel_time": "30m"}}
+    
+    EDGE CASE HANDLING:
+    - If you receive an Observation stating "no overlap" or that participants are too far apart, you MUST call the tool again and increase the "travel_time" (e.g., to "45m" or "1h").
+    - MAXIMUM RETRY RULE: If you have increased the travel_time up to "2h" and still receive a "no overlap" error, DO NOT use the tool again. Immediately output "Final Answer: " explaining to the user that they are physically too far apart for a practical meetup.
+
+    CRITICAL STOPPING RULE: 
+    - Once you receive the list of recommended places from find_optimal_meeting_spots, DO NOT use any more tools. 
     - You must immediately output "Final Answer: " followed by a friendly summary of the top 2 recommended spots for the user.
 
     Use the following format:
@@ -104,14 +107,14 @@ def build_agent() -> AgentExecutor:
         tools=tools,
         verbose=True,
         handle_parsing_errors=True,
-        max_iterations=4,
+        max_iterations=6,
     )
 
 
 def main() -> None:
     executor = build_agent()
 
-    prompt = "Alice is at Union Station, Toronto and will WALK. Bob is at Yonge and Bloor, Toronto and will BICYCLE. Find a cafe for them to meet at."
+    prompt = "Alice is at University of British Columbia, Vancouver and will DRIVE. Bob is at Yonge and Bloor, Toronto and will DRIVE. Find a cafe for them to meet at."
     result = executor.invoke({"input": prompt})
 
     print("\n=== Final Result ===")
