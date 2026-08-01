@@ -1,14 +1,12 @@
 from __future__ import annotations
-
-import ast
 import json
-from typing import Any
-
 from langchain.agents import AgentExecutor
 from langchain.agents.react.agent import create_react_agent
 from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
+
+from google_api_based_gis_tools import full_pipeline
 
 
 # -----------------------------------------------------------------------------
@@ -23,104 +21,73 @@ API_KEY = "EMPTY"  # vLLM local endpoints usually accept any string here unless 
 MODEL_NAME = "gatherpoint-local"
 
 @tool
-def calculate_midpoint(locations: str) -> str:
-    """Calculate a meetup midpoint for a list of locations.
-
-    Use this tool when the user provides two or more place names, neighborhoods,
-    or rough location descriptions and wants a single midpoint coordinate to
-    anchor the planning search.
+def find_optimal_meeting_spots(input_json_str: str) -> str:
+    """Find the best meetup recommendations for multiple participants.
 
     Input format:
-    - Pass a JSON array string of locations.
-    - Example: '["Alice is downtown", "Bob is in the suburbs"]'
-
-    Output:
-    - Always returns the mock coordinate string "43.65°N, 79.38°W".
+    - A single JSON string with exactly these keys: user_addresses, transport_modes, place_type, and travel_time.
+    - Example: '{"user_addresses": ["Union Station", "Yonge and Bloor"], "transport_modes": ["WALK", "BICYCLE"], "place_type": "cafe", "travel_time": "30m"}'
     """
-    
-    # 1. Safely try to parse the string into a list
     try:
-        parsed_locations = json.loads(locations)
-        if not isinstance(parsed_locations, list):
-            parsed_locations = [locations] # Fallback if it's just a raw string
+        clean_str = input_json_str.strip().strip("'").strip('"')
+        args = json.loads(clean_str)
+        
+        user_addresses = args.get("user_addresses", [])
+        transport_modes = args.get("transport_modes", [])
+        place_type = args.get("place_type", "cafe")
+        # Extract travel_time, default to 30m
+        travel_time = args.get("travel_time", "30m")
+
+        # Pass travel_time to the pipeline
+        result = full_pipeline(user_addresses, transport_modes, place_type, travel_time)
+
+        if isinstance(result, dict) and "error" in result:
+             return f"Observation: API Error - {result['error']}. Please try adjusting your parameters, such as increasing the travel_time."
+        
+        final_text = result.get("ai_text", str(result))
+        if "Based on the above information" in final_text:
+            final_text = final_text.split("Based on the above information")[0]
+        
+        return final_text
+
     except json.JSONDecodeError:
-        # Fallback if the LLM forgets JSON formatting and just uses commas
-        parsed_locations = [loc.strip() for loc in locations.split(',')]
-
-    # 2. Process the list safely
-    normalized_locations: list[str] = []
-    for location in parsed_locations:
-        normalized_locations.append(str(location).strip())
-
-    _ = normalized_locations
-    return "43.65°N, 79.38°W"
-
-
-@tool
-def search_nearby_places(input_string: str) -> str:
-    """Search for nearby places around a center coordinate.
-
-    Use this tool after a midpoint has been found and the agent needs candidate
-    meetup spots near that coordinate.
-
-    Input format:
-    - A single string containing both the coordinate and the query.
-    - Example: '43.65°N, 79.38°W, vegan restaurant'
-
-    Output:
-    - Always returns a hardcoded JSON string with two mock restaurants.
-    - This is a proof-of-concept stub, not a real place search.
-    """
-
-    # For Phase 1, we accept the raw string the LLM generates and immediately 
-    # return our hardcoded success payload to prove the ReAct loop finishes.
-    _ = input_string
-
-    results = {
-        "center_coordinate": "43.65°N, 79.38°W",
-        "query": "vegan restaurant",
-        "results": [
-            {
-                "name": "Green Leaf Vegan",
-                "address": "123 Queen St W, Toronto, ON",
-                "rating": 4.8,
-            },
-            {
-                "name": "Plant Power Bites",
-                "address": "456 King St W, Toronto, ON",
-                "rating": 4.6,
-            },
-        ],
-    }
-    return json.dumps(results, ensure_ascii=False)
+        return "Observation: Error parsing input. You must provide a valid JSON string with 'user_addresses', 'transport_modes', and 'place_type'."
+    except Exception as e:
+        return f"Observation: Error executing GIS tool: {str(e)}. Please check your inputs and try again."
 
 
 PROMPT = PromptTemplate.from_template(
-    """You are a practical meetup-planning assistant.
+    """You are a helpful meetup planning assistant. 
+    You have access to the following tools:
+    {tools}
+    
+    Rules:
+    - Extract all user addresses.
+    - Extract transport modes. Default to DRIVE if missing.
+    - Extract the venue type (place_type).
+    - Default travel_time is "30m".
+    - When calling find_optimal_meeting_spots, Action Input must be a valid JSON object. Example: {{"user_addresses": ["Union Station, Toronto"], "transport_modes": ["WALK"], "place_type": "cafe", "travel_time": "30m"}}
+    
+    EDGE CASE HANDLING:
+    - If you receive an Observation stating "no overlap" or that participants are too far apart, you MUST call the tool again and increase the "travel_time" (e.g., to "45m" or "1h").
+    - MAXIMUM RETRY RULE: If you have increased the travel_time up to "2h" and still receive a "no overlap" error, DO NOT use the tool again. Immediately output "Final Answer: " explaining to the user that they are physically too far apart for a practical meetup.
 
-You have access to the following tools:
+    CRITICAL STOPPING RULE: 
+    - Once you receive the list of recommended places from find_optimal_meeting_spots, DO NOT use any more tools. 
+    - You must immediately output "Final Answer: " followed by a friendly summary of the top 2 recommended spots for the user.
 
-{tools}
+    Use the following format:
+    Question: the input question you must answer
+    Thought: you should always think about what to do
+    Action: the action to take, should be one of [{tool_names}]
+    Action Input: the input to the action
+    Observation: the result of the action
+    ... (this Thought/Action/Action Input/Observation can repeat N times)
+    Thought: I now know the final answer
+    Final Answer: the final answer to the original input question
 
-Use this exact format for every step:
-
-Question: the user's request
-Thought: think about the best next step
-Action: one of [{tool_names}]
-Action Input: the tool input
-Observation: the tool result
-... repeat Thought / Action / Action Input / Observation as needed ...
-Thought: I now know the final answer
-Final Answer: the answer to the user
-
-Important rules:
-- If the user mentions multiple people or locations, first use calculate_midpoint.
-- After you have a midpoint, use search_nearby_places for a relevant venue type.
-- When a tool takes multiple fields, write Action Input as JSON.
-- Keep the reasoning concise and focused on the next decision.
-
-Question: {input}
-Thought:{agent_scratchpad}"""
+    Question: {input}
+    Thought:{agent_scratchpad}"""
 )
 
 
@@ -132,7 +99,7 @@ def build_agent() -> AgentExecutor:
         temperature=0,
     )
 
-    tools = [calculate_midpoint, search_nearby_places]
+    tools = [find_optimal_meeting_spots]
     agent = create_react_agent(llm=llm, tools=tools, prompt=PROMPT)
 
     return AgentExecutor(
@@ -140,14 +107,14 @@ def build_agent() -> AgentExecutor:
         tools=tools,
         verbose=True,
         handle_parsing_errors=True,
-        max_iterations=4,
+        max_iterations=6,
     )
 
 
 def main() -> None:
     executor = build_agent()
 
-    prompt = "Alice is downtown, Bob is in the suburbs. Find a vegan restaurant midway between them."
+    prompt = "Alice is at University of British Columbia, Vancouver and will DRIVE. Bob is at Yonge and Bloor, Toronto and will DRIVE. Find a cafe for them to meet at."
     result = executor.invoke({"input": prompt})
 
     print("\n=== Final Result ===")
