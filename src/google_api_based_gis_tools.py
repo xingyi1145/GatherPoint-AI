@@ -15,7 +15,6 @@ if not API_KEY:
     raise RuntimeError("Google API key not found. Set GOOGLE_API_KEY in your .env file.")
 gmaps = googlemaps.Client(key=API_KEY)
 
-
 def baseline_measurement(label_or_func="[BASELINE MEASUREMENT]", display_name=None):
     """Print a consistent timing line for performance baselining."""
 
