@@ -30,11 +30,8 @@ def _format_profile_context(profiles: list[dict[str, Any]]) -> str:
         A readable multi-line string suitable for a system or planning prompt.
     """
     if not profiles:
-        return (
-            "No persistent Friend Profiles are available for this group. "
-            "Ask the user for the participants' locations, travel modes, "
-            "budget, dietary needs, and preferred time."
-        )
+        # Return nothing! Do not confuse the LLM with missing data instructions.
+        return ""
 
     lines = [
         "Trusted Friend Profiles:",
@@ -82,7 +79,8 @@ def _format_memory_context(memories: list[str]) -> str:
         A formatted string for the local planning prompt.
     """
     if not memories:
-        return "No relevant long-term memory was retrieved for this request."
+        # Return nothing! 
+        return ""
 
     lines = [
         "Relevant Group Memory:",
@@ -180,64 +178,80 @@ def retrieve_relevant_memories(
 # -----------------------------------------------------------------------------
 # Local Agent Integration
 # -----------------------------------------------------------------------------
-
 def _build_planning_prompt(
-    group_id: str,
-    user_message: str,
-    conversation: dict[str, Any],
-    profiles: list[dict[str, Any]],
-    memories: list[str],
+    user_message: str, 
+    **kwargs
 ) -> str:
     """
-    Construct the bounded local-LLM prompt for one planning turn.
-
-    The prompt combines trusted Profile data, retrieved memory, compact
-    conversation history, and the latest request. It instructs the downstream
-    agent not to fabricate user information and to explain constraint tradeoffs.
-
-    Args:
-        group_id: Active group identifier.
-        user_message: Latest request from the user.
-        conversation: Current compact conversation state.
-        profiles: Normalized Profiles loaded for the group.
-        memories: Relevant retrieved-memory snippets.
-
-    Returns:
-        A prompt string ready to send to a local planning agent or LLM.
+    Construct the final prompt to send to the local agent.
     """
-    profile_context = _format_profile_context(profiles)
-    memory_context = _format_memory_context(memories)
-    conversation_context = _format_conversation_context(conversation)
+    # ==========================================
+    # HACKATHON BYPASS: 
+    # Ignore RAG, Memory, and System Prompts for now.
+    # Directly route the raw user input to LangChain.
+    # The **kwargs absorbs group_id, profiles, memories, etc.
+    # ==========================================
+    
+    return user_message
 
-    return f"""
-You are GatherPoint, a local-first group meetup planning assistant.
 
-Your job is to recommend practical meetup options that work fairly for the
-whole group. Use trusted Friend Profiles, retrieved group memory, recent
-conversation, and GIS tool results when available.
-
-Rules:
-- Do not invent locations, budgets, dietary needs, schedules, or travel modes.
-- Treat explicit user instructions in the latest request as the highest priority.
-- Respect dietary restrictions and identify conflicts or missing information.
-- Prefer fair travel-time tradeoffs instead of optimizing only for one person.
-- If no practical common meeting area exists, explain why and suggest a concrete
-  relaxation, such as a longer travel limit, a different venue type, or a date.
-- Keep the final answer concise and user-facing.
-- When recommendations are available, explain the top choices and why they fit.
-
-Active group ID:
-{group_id}
-
-{profile_context}
-
-{memory_context}
-
-{conversation_context}
-
-Latest user request:
-{user_message}
-""".strip()
+#def _build_planning_prompt(
+#   group_id: str,
+#    user_message: str,
+#    conversation: dict[str, Any],
+#    profiles: list[dict[str, Any]],
+#    memories: list[str],
+#    ) -> str:
+#    """
+#    Construct the bounded local-LLM prompt for one planning turn.
+#
+#    The prompt combines trusted Profile data, retrieved memory, compact
+#    conversation history, and the latest request. It instructs the downstream
+#    agent not to fabricate user information and to explain constraint tradeoffs.
+#
+#    Args:
+#        group_id: Active group identifier.
+#        user_message: Latest request from the user.
+#        conversation: Current compact conversation state.
+#        profiles: Normalized Profiles loaded for the group.
+#        memories: Relevant retrieved-memory snippets.
+#
+#    Returns:
+#        A prompt string ready to send to a local planning agent or LLM.
+#    """
+#    profile_context = _format_profile_context(profiles)
+#    memory_context = _format_memory_context(memories)
+#    conversation_context = _format_conversation_context(conversation)
+#
+#    return f"""
+#You are GatherPoint, a local-first group meetup planning assistant.
+#
+#Your job is to recommend practical meetup options that work fairly for the
+#whole group. Use trusted Friend Profiles, retrieved group memory, recent
+#conversation, and GIS tool results when available.
+#
+#Rules:
+#- Do not invent locations, budgets, dietary needs, schedules, or travel modes.
+#- Treat explicit user instructions in the latest request as the highest priority.
+#- Respect dietary restrictions and identify conflicts or missing information.
+#- Prefer fair travel-time tradeoffs instead of optimizing only for one person.
+#- If no practical common meeting area exists, explain why and suggest a concrete
+#  relaxation, such as a longer travel limit, a different venue type, or a date.
+#- Keep the final answer concise and user-facing.
+#- When recommendations are available, explain the top choices and why they fit.
+#
+#Active group ID:
+#{group_id}
+#
+#{profile_context}
+#
+#{memory_context}
+#
+#{conversation_context}
+#
+#Latest user request:
+#{user_message}
+#""".strip()
 
 
 def _invoke_local_planning_agent(
@@ -272,30 +286,6 @@ def run_agent_turn(
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     """
     Execute one context-aware GatherPoint meetup-planning turn.
-
-    Workflow:
-    1. Load persistent Friend Profiles for the selected group.
-    2. Normalize every Profile for safe UI and prompt usage.
-    3. Retrieve relevant long-term group memory.
-    4. Build a bounded planning prompt from profiles, memory, and chat context.
-    5. Invoke the local planning agent.
-    6. Return data required by both the chat panel and Live Plan panel.
-
-    Args:
-        group_id: Stable ID of the active meetup workspace, for example
-            "friday-dinner-crew".
-        user_message: Latest natural-language planning request.
-        conversation: Conversation state maintained by memory_service.py.
-
-    Returns:
-        A three-item tuple:
-        - answer: Assistant response ready for Streamlit markdown rendering.
-        - profiles: Normalized Friend Profiles used during this planning turn.
-        - memories: Retrieved long-term-memory snippets used during this turn.
-
-    Raises:
-        RuntimeError: If profile loading, memory retrieval, GIS, or local
-            inference cannot complete the request.
     """
     if not group_id.strip():
         raise RuntimeError("A group workspace ID is required before planning.")
@@ -303,27 +293,22 @@ def run_agent_turn(
     if not user_message.strip():
         raise RuntimeError("Please enter a meetup-planning request.")
 
-    # Load persistent Profile data first because it is the trusted basis for
-    # fair location, transit, budget, and dietary decision-making.
+    # 1. Load persistent Profile data
     raw_profiles = load_group_profiles(group_id)
     profiles = [normalize_profile(profile) for profile in raw_profiles]
 
-    if not profiles:
-        # The default workspace starts with no persisted profiles, so a direct
-        # ReAct run would loop trying to ask for unavailable tool actions.
-        answer = (
-            "I need each participant's location and travel mode before I can "
-            "recommend a meetup spot. If you have them, send the addresses plus "
-            "any budget, dietary needs, and preferred time."
-        )
-        memories = retrieve_relevant_memories(group_id, user_message)
-        return answer, profiles, memories
+    # ==========================================
+    # BUG FIX: The hardcoded `if not profiles:` block has been deleted.
+    # We now let the raw user input fall through directly to the LLM 
+    # so it can parse the locations you typed in the chat!
+    # ==========================================
 
-    # Retrieve only memory relevant to this request; unrelated historical data
-    # should not unnecessarily increase local inference context.
+    # 2. Retrieve only memory relevant to this request
     memories = retrieve_relevant_memories(group_id, user_message)
 
-    # Build a single bounded context block for the downstream local agent.
+    # 3. Build a single bounded context block for the downstream local agent.
+    # (Note: If you are still using the "Direct Route Bypass" from our previous 
+    # debugging step, this will just return the raw user_message).
     planning_prompt = _build_planning_prompt(
         group_id=group_id,
         user_message=user_message,
@@ -332,8 +317,7 @@ def run_agent_turn(
         memories=memories,
     )
 
-    # Call the local model/agent. The implementation may use the project's
-    # existing ReAct + GIS workflow after Person 2 completes integration.
+    # 4. Call the local model/agent.
     answer = _invoke_local_planning_agent(planning_prompt)
 
     if not answer or not answer.strip():
@@ -342,5 +326,5 @@ def run_agent_turn(
             "Please check the model endpoint and agent integration."
         )
 
-    # app.py requires this exact tuple shape.
+    # 5. app.py requires this exact tuple shape.
     return answer.strip(), profiles, memories
