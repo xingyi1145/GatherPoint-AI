@@ -30,65 +30,27 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-        /* --- FORCE SIDEBAR TO STAY OPEN --- */
-        /* Hide the inside collapse button (<<) */
-        [data-testid="stSidebarCollapseButton"] {
-            display: none !important;
-        }
-
-        /* 1. Completely hide the collapse/expand arrow */
-        [data-testid="collapsedControl"] {
-            display: none !important;
-        }
-
-        /* 2. Force the sidebar to remain visible and locked in place */
-        [data-testid="stSidebar"] {
-            display: flex !important;
-            transform: none !important;
-            visibility: visible !important;
-            min-width: 16rem !important;
-        }
-
-        /* 3. Ensure the main chat area doesn't overlap the locked sidebar */
-        [data-testid="stSidebar"] + section {
-            margin-left: 0 !important;
-        }
-
-        /* 4. Force the sidebar to remain visible and locked in place */
-        [data-testid="stSidebar"] {
-            display: flex !important;
-            transform: none !important;
-            visibility: visible !important;
-            min-width: 16rem !important;
-            overflow-x: hidden !important; /* <--- ADD THIS LINE */
-        }
-
         :root {
-            --bg: #07111f;
-            --panel: #0d1b2d;
-            --panel-soft: #10243a;
-            --line: rgba(158, 185, 216, 0.16);
-            --text: #eef6ff;
-            --muted: #93a8c0;
-            --green: #39d7aa;
-            --purple: #8891ff;
-            --amber: #ffbd66;
-            --red: #ff7e8b;
+            --bg: #ffffff;
+            --sidebar-bg: #fdfdfd;
+            --line: #f2f2f2;
+            --text: #111322;
+            --muted: #767583;
+            --primary: #0e34dd;
+            --chip-bg: #edf0f7;
+            --input-bg: #ffffff;
+            --message-bg: #f9fafb;
+            --accent: #d44928;
+            --accent-hover: #bf4022;
+            --accent-border: #ab3d24;
+            --input-border: #e5e7eb;
+            --message-border: #eae9ee;
+            --label-color: #414651;
         }
 
         .stApp {
-            background:
-                radial-gradient(
-                    circle at 12% -10%,
-                    rgba(55, 215, 170, 0.13),
-                    transparent 32rem
-                ),
-                radial-gradient(
-                    circle at 92% 10%,
-                    rgba(136, 145, 255, 0.16),
-                    transparent 30rem
-                ),
-                var(--bg);
+            font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: var(--bg);
             color: var(--text);
         }
 
@@ -97,268 +59,225 @@ st.markdown(
             visibility: hidden;
         }
 
-        .block-container {
-            max-width: 1500px;
-            padding-top: 1.5rem;
-            padding-bottom: 2rem;
-        }
-
+        [data-testid="stSidebarCollapseButton"],
         [data-testid="collapsedControl"] {
+            display: none !important;
         }
 
-        section[data-testid="stSidebar"], div[data-testid="stSidebar"] {
-            min-width: 320px;
-            max-width: 320px;
-            width: 320px !important;
-            position: fixed;
-            left: 0;
-            top: 0;
-            height: 100vh;
-            overflow-y: auto;
-            border-right: 1px solid var(--line);
-            background: linear-gradient(180deg, rgba(9, 23, 39, 0.98), rgba(7, 17, 31, 0.98));
-            z-index: 1000;
+        .block-container {
+            max-width: 1180px;
+            padding-top: 2rem;
+            padding-bottom: 6rem;
+            margin-left: 0;
         }
 
-        section.main {
-            margin-left: 320px;
+        section[data-testid="stSidebar"],
+        div[data-testid="stSidebar"] {
+            display: block !important;
+            width: 242px !important;
+            min-width: 242px !important;
+            max-width: 242px !important;
+            position: fixed !important;
+            left: 0 !important;
+            top: 0 !important;
+            bottom: 0 !important;
+            height: 100vh !important;
+            overflow-y: auto !important;
+            border-right: 1px solid var(--line) !important;
+            background: var(--sidebar-bg) !important;
+            box-shadow: none !important;
+            overflow-x: hidden !important;
+            z-index: 999999 !important;
+            transform: none !important;
         }
 
         section[data-testid="stSidebar"] > div:first-child,
         div[data-testid="stSidebar"] > div:first-child {
-            padding-top: 1.1rem;
+            padding-top: 0.8rem;
+            padding-left: 0.7rem;
+            padding-right: 0.7rem;
+            background: var(--sidebar-bg) !important;
+            height: 100% !important;
         }
 
-        section[data-testid="stSidebar"] [data-testid="stSidebarContent"],
-        div[data-testid="stSidebar"] [data-testid="stSidebarContent"] {
-            padding-bottom: 1.25rem;
+        section.main .block-container {
+            margin-left: 242px !important;
         }
 
-        h1, h2, h3, p, span, label {
+        h1, h2, h3, label, p, span {
             color: var(--text);
         }
 
-        .hero {
-            border: 1px solid var(--line);
-            background: linear-gradient(
-                135deg,
-                rgba(18, 43, 68, 0.96),
-                rgba(12, 28, 47, 0.92)
-            );
-            border-radius: 22px;
-            padding: 1.45rem 1.6rem;
-            margin-bottom: 1.1rem;
-            box-shadow: 0 18px 45px rgba(0, 0, 0, 0.19);
+        h1 {
+            font-size: 2.25rem;
+            font-weight: 700;
+            line-height: 1.2;
         }
 
-        .eyebrow {
-            color: var(--green);
-            font-size: 0.75rem;
-            font-weight: 700;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-            margin-bottom: 0.45rem;
+        .hero {
+            border-bottom: 1px solid var(--line);
+            border-radius: 0;
+            background: var(--bg);
+            padding: 0 0 1.25rem 0;
+            margin-bottom: 1.25rem;
+            box-shadow: none;
         }
 
         .hero-title {
             color: var(--text);
-            font-size: 2rem;
-            font-weight: 750;
-            line-height: 1.1;
+            font-size: 2.6rem;
+            font-weight: 700;
+            line-height: 1.15;
             margin: 0;
         }
 
         .hero-subtitle {
             color: var(--muted);
-            margin-top: 0.55rem;
+            margin-top: 0.45rem;
             margin-bottom: 0;
-            line-height: 1.55;
-        }
-
-        .local-badge {
-            display: inline-block;
-            border: 1px solid rgba(57, 215, 170, 0.45);
-            background: rgba(57, 215, 170, 0.11);
-            color: #8df2d1;
-            border-radius: 99px;
-            font-size: 0.75rem;
-            font-weight: 700;
-            padding: 0.35rem 0.7rem;
-            margin-top: 0.8rem;
+            line-height: 1.45;
+            font-size: 0.95rem;
         }
 
         .section-label {
-            color: #b8c9dd;
-            font-size: 0.74rem;
-            font-weight: 750;
-            letter-spacing: 0.11em;
+            color: var(--text);
+            font-size: 0.82rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
             text-transform: uppercase;
             margin: 0.3rem 0 0.6rem 0;
-        }
-
-        .panel {
-            border: 1px solid var(--line);
-            background: rgba(13, 27, 45, 0.88);
-            border-radius: 18px;
-            padding: 1rem;
-            margin-bottom: 0.9rem;
         }
 
         .sidebar-section {
             margin-top: 1rem;
         }
 
-        .sidebar-row {
-            margin-bottom: 0.55rem;
-        }
-
-        .profile-card {
-            border-left: 3px solid var(--green);
-            background: rgba(20, 46, 71, 0.64);
-            border-radius: 11px;
-            padding: 0.72rem 0.78rem;
-            margin-bottom: 0.62rem;
-        }
-
-        .profile-name {
-            color: var(--text);
-            font-size: 0.93rem;
-            font-weight: 700;
-        }
-
-        .profile-detail {
+        [data-testid="stSidebar"] .stCaption {
             color: var(--muted);
-            font-size: 0.77rem;
-            line-height: 1.55;
-            margin-top: 0.2rem;
-        }
-
-        .sidebar-status {
-            display: inline-block;
-            border: 1px solid rgba(57, 215, 170, 0.32);
-            background: rgba(57, 215, 170, 0.10);
-            color: #8df2d1;
-            border-radius: 99px;
-            padding: 0.28rem 0.6rem;
-            font-size: 0.72rem;
-            font-weight: 700;
-        }
-
-        .sidebar-muted {
-            color: var(--muted);
-            font-size: 0.82rem;
+            font-size: 0.78rem;
             line-height: 1.5;
         }
 
-        .tag {
-            display: inline-block;
-            border-radius: 99px;
-            background: rgba(136, 145, 255, 0.15);
-            border: 1px solid rgba(136, 145, 255, 0.35);
-            color: #c4c8ff;
-            padding: 0.2rem 0.48rem;
-            margin: 0.36rem 0.24rem 0 0;
-            font-size: 0.68rem;
-            font-weight: 650;
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3,
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] .stMarkdown p {
+            color: var(--text) !important;
+            font-weight: 600 !important;
         }
 
-        .memory-item {
-            border-left: 2px solid var(--purple);
-            background: rgba(136, 145, 255, 0.08);
-            color: #c8d2e1;
+        [data-testid="stSidebar"] h2 {
+            font-size: 1.05rem;
+            margin-top: 0.15rem;
+            margin-bottom: 0.35rem;
+        }
+
+        [data-testid="stSidebar"] h3 {
+            font-size: 0.92rem;
+            margin-top: 0.75rem;
+            margin-bottom: 0.2rem;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stSelectbox"] label,
+        [data-testid="stSidebar"] [data-testid="stTextInput"] label {
+            color: var(--label-color);
             font-size: 0.78rem;
-            padding: 0.55rem 0.65rem;
-            margin-bottom: 0.45rem;
-            border-radius: 0 8px 8px 0;
-            line-height: 1.45;
+            font-weight: 600;
         }
 
         /* Style user and assistant messages as product chat cards. */
         [data-testid="stChatMessage"] {
-            border: 1px solid var(--line);
-            background: rgba(12, 28, 47, 0.72);
-            border-radius: 14px;
-            margin-bottom: 0.7rem;
-            padding: 0.2rem 0.3rem;
+            border: 1px solid var(--message-border);
+            background: var(--message-bg);
+            border-radius: 8px;
+            margin-bottom: 0.65rem;
+            padding: 0.25rem 0.4rem;
+            box-shadow: none;
         }
 
         [data-testid="stChatInput"] {
-            border: 1px solid rgba(57, 215, 170, 0.36);
-            border-radius: 14px;
-            background: rgba(12, 29, 47, 0.9);
+            border: 1px solid var(--message-border);
+            border-radius: 8px;
+            background: var(--input-bg);
+            box-shadow: 0 1px 1px rgba(16, 24, 40, 0.04);
         }
 
         div.stButton > button {
-            border-radius: 10px;
-            border: 1px solid rgba(57, 215, 170, 0.45);
-            background: rgba(57, 215, 170, 0.10);
-            color: #dffef4;
-            font-weight: 650;
+            border-radius: 6px;
+            border: 1px solid var(--accent-border);
+            background: var(--accent);
+            color: var(--bg);
+            font-weight: 600;
+            font-size: 0.8rem;
+            box-shadow: none;
         }
 
         div.stButton > button:hover {
-            background: rgba(57, 215, 170, 0.20);
-            border-color: var(--green);
-            color: white;
+            background: var(--accent-hover);
+            border-color: #99351f;
         }
 
-        [data-testid="stTextInput"] input {
-            border-radius: 10px;
+        [data-testid="stTextInput"] input,
+        [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+            border-radius: 6px;
+            border-color: var(--input-border);
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        /* Chat input bar text must be white against its dark background. */
+        [data-testid="stChatInput"] textarea,
+        [data-testid="stChatInputTextArea"] {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+        }
+
+        /* Keep the bottom chat input from overlapping the fixed sidebar. */
+        [data-testid="stBottom"] {
+            left: 16rem !important;
+            width: calc(100% - 16rem) !important;
+            z-index: 99 !important;
+            background-color: transparent !important;
+        }
+
+        /* --- AGENT STATUS WIDGET (st.status renders as an expander): STATIC WHITE BUBBLE --- */
+        /* Force a permanent white card look and remove every hover/focus transition. */
+        [data-testid="stExpander"],
+        [data-testid="stExpander"] *,
+        [data-testid="stExpander"] details,
+        [data-testid="stExpander"] summary,
+        [data-testid="stExpander"] summary:hover,
+        [data-testid="stExpander"] summary:active,
+        [data-testid="stExpander"] summary:focus,
+        [data-testid="stExpanderDetails"] {
+            background-color: #ffffff !important;
+            background: #ffffff !important;
+            border-color: var(--message-border) !important;
+            box-shadow: none !important;
+            transition: none !important;
+        }
+
+        /* Force every text node inside the status widget to stay dark. */
+        [data-testid="stExpander"] *,
+        [data-testid="stExpander"] summary span,
+        [data-testid="stExpander"] [data-testid="stMarkdownContainer"] p,
+        [data-testid="stExpander"] [data-testid="stMarkdownContainer"] span,
+        [data-testid="stExpander"] [data-testid="stMarkdownContainer"] div {
+            color: #111322 !important;
+            font-weight: 500 !important;
+        }
+
+        /* Force the loading spinner / icons to be dark at all times. */
+        [data-testid="stExpander"] svg,
+        [data-testid="stExpander"] svg * {
+            color: #111322 !important;
+            fill: #111322 !important;
+            stroke: #111322 !important;
         }
     </style>
     """,
     unsafe_allow_html=True,
 )
-
-# -----------------------------------------------------------------------------
-# SIDEBAR: Context & System Status
-# -----------------------------------------------------------------------------
-with st.sidebar:
-    
-    # 1. New Plan Button
-    if st.button("New plan", use_container_width=True, type="primary"):
-        # Clear the chat history when starting a new plan
-        st.session_state.conversation = {"messages": []} 
-        st.rerun()
-
-    st.divider()
-
-    # 2. Active Group
-    st.header("Workspace")
-    st.selectbox(
-        "Active group",
-        options=["Hackathon Team", "Weekend Hike", "Dinner Squad"],
-        index=0,
-        key="active_group_selector"
-    )
-    
-    st.divider()
-
-    # 3. Saved Profiles (Dynamic Mapping)
-    st.subheader("Saved Profiles")
-    
-    # Check if we have dynamic profiles loaded from your SQLite/JSON backend
-    if "loaded_profiles" in st.session_state and st.session_state.loaded_profiles:
-        for profile in st.session_state.loaded_profiles:
-            # Assuming profile is a dict: {'name': 'Alice', 'transport': 'Transit', 'address': '123 St', 'notes': 'Vegan'}
-            st.markdown(f"**{profile.get('name', 'Unknown')}**")
-            st.caption(f"Transport: {profile.get('transport', 'N/A')}")
-            st.caption(f"Address: {profile.get('address', 'N/A')}")
-            
-            # Conditionally render extra constraints if they exist
-            if profile.get('notes'):
-                st.caption(f"Notes: {profile.get('notes')}")
-            
-            st.write("") # Small spacer between profiles
-    else:
-        st.caption("No saved profiles for this group.")
-
-    st.divider()
-
-    # 4 & 5. Status Indicators
-    st.subheader("System Status")
-    st.caption("Local Memory: Active")
-    st.caption("Local vLLM: Online")
 
 
 # -----------------------------------------------------------------------------
@@ -414,31 +333,6 @@ def sync_group_profiles() -> None:
     st.session_state.loaded_profiles = load_group_profiles(st.session_state.group_id)
 
 
-def render_profile_card(raw_profile: dict) -> None:
-    """
-    Render one compact Friend Profile card in the sidebar.
-    """
-    profile = normalize_profile(raw_profile)
-
-    dietary = ", ".join(profile["dietary_restrictions"]) or "No restrictions"
-    interests = ", ".join(profile["interests"]) or "Not specified"
-
-    st.markdown(
-        f"""
-        <div class="profile-card">
-            <div class="profile-name">{profile["name"]}</div>
-            <div class="profile-detail">
-                {profile["address"]}<br>
-                {profile["transit_mode"]} &nbsp; · &nbsp; {profile["budget"]}<br>
-                {dietary}<br>
-                {interests}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 def render_sidebar_profile_line(raw_profile: dict) -> None:
     """
     Render one compact constraint summary line for the sidebar.
@@ -460,14 +354,59 @@ if not st.session_state.loaded_profiles:
 
 
 # -----------------------------------------------------------------------------
+# Sidebar
+# -----------------------------------------------------------------------------
+with st.sidebar:
+    st.header("Chatform")
+
+    if st.button("New plan", use_container_width=True):
+        reset_conversation()
+        st.rerun()
+
+    st.divider()
+    st.subheader("Workspace")
+
+    group_candidates = [
+        st.session_state.group_id,
+        "hackathon-team",
+        "weekend-hike",
+        "dinner-squad",
+    ]
+    group_options = list(dict.fromkeys(group_candidates))
+    active_group = st.selectbox("Active group", options=group_options, index=0)
+
+    if active_group != st.session_state.group_id:
+        st.session_state.group_id = active_group
+        sync_group_profiles()
+
+    st.divider()
+    st.subheader("Saved Profiles")
+
+    if st.session_state.loaded_profiles:
+        for raw_profile in st.session_state.loaded_profiles:
+            render_sidebar_profile_line(raw_profile)
+    else:
+        st.caption("No saved profiles for this group.")
+
+    st.divider()
+    st.subheader("Local Memory")
+    st.caption("Memory: Active")
+
+    st.divider()
+    st.subheader("System Status")
+    st.caption("Local vLLM: Online")
+
+
+# -----------------------------------------------------------------------------
 # Header
 # -----------------------------------------------------------------------------
 st.markdown(
     """
     <div class="hero">
-        <h1 class="hero-title">GatherPoint</h1>
+        <p class="hero-subtitle">Home</p>
+        <h1 class="hero-title">Welcome to GatherPoint</h1>
         <p class="hero-subtitle">
-            Local-first group coordination powered by AMD ROCm & vLLM.
+            Local-first group coordination powered by AMD ROCm and vLLM.
         </p>
     </div>
     """,
@@ -481,9 +420,7 @@ st.markdown(
 st.markdown('<p class="section-label">Conversation</p>', unsafe_allow_html=True)
 
 for message in st.session_state.conversation["messages"]:
-    avatar = "🧑" if message["role"] == "user" else "📍"
-
-    with st.chat_message(message["role"], avatar=avatar):
+    with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 prompt = st.chat_input(
@@ -494,10 +431,10 @@ prompt = st.chat_input(
 if prompt:
     add_message(st.session_state.conversation, "user", prompt)
 
-    with st.chat_message("user", avatar="🧑"):
+    with st.chat_message("user"):
         st.markdown(prompt)
 
-    with st.chat_message("assistant", avatar="📍"):
+    with st.chat_message("assistant"):
         status = st.status("GatherPoint is planning...", expanded=True)
 
         try:
