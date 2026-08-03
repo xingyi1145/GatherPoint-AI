@@ -1,5 +1,7 @@
 from __future__ import annotations
 import json
+import time
+from functools import wraps
 from langchain.agents import AgentExecutor
 from langchain.agents.react.agent import create_react_agent
 from langchain_core.prompts import PromptTemplate
@@ -7,6 +9,22 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
 from google_api_based_gis_tools import full_pipeline
+
+
+def timing_measurement(label: str, name: str):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                print(f"{label} {name} took {elapsed_ms:.2f} ms")
+
+        return wrapper
+
+    return decorator
 
 
 # -----------------------------------------------------------------------------
@@ -115,7 +133,12 @@ def main() -> None:
     executor = build_agent()
 
     prompt = "Alice is at University of British Columbia, Vancouver and will DRIVE. Bob is at Yonge and Bloor, Toronto and will DRIVE. Find a cafe for them to meet at."
-    result = executor.invoke({"input": prompt})
+
+    @timing_measurement("[LLM LATENCY]", "agent_reasoning")
+    def run_agent():
+        return executor.invoke({"input": prompt})
+
+    result = run_agent()
 
     print("\n=== Final Result ===")
     print(result["output"])

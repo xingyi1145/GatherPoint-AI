@@ -4,6 +4,8 @@ import json
 import numpy as np
 import os
 import re
+import time
+from functools import wraps
 from math import radians, cos, sin, asin, sqrt, degrees, atan2
 from dotenv import load_dotenv
 
@@ -12,6 +14,42 @@ API_KEY = os.getenv("GOOGLE_API_KEY")
 if not API_KEY:
     raise RuntimeError("Google API key not found. Set GOOGLE_API_KEY in your .env file.")
 gmaps = googlemaps.Client(key=API_KEY)
+
+
+def baseline_measurement(label_or_func="[BASELINE MEASUREMENT]", display_name=None):
+    """Print a consistent timing line for performance baselining."""
+
+    if callable(label_or_func):
+        func = label_or_func
+
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                print(f"[BASELINE MEASUREMENT] {func.__name__} took {elapsed_ms:.2f} ms")
+
+        return wrapper
+
+    label = str(label_or_func)
+
+    def decorator(inner_func):
+        measured_name = display_name or inner_func.__name__
+
+        @wraps(inner_func)
+        def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return inner_func(*args, **kwargs)
+            finally:
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                print(f"{label} {measured_name} took {elapsed_ms:.2f} ms")
+
+        return wrapper
+
+    return decorator
 
 # -------------------- Geometric Utility Functions (API-independent) --------------------
 
@@ -156,6 +194,7 @@ def parse_travel_time(travel_time_str: str) -> int:
         f"Supported formats: '30m', '45min', '1h', '1.5h', '3600s'"
     )
 
+@baseline_measurement("[API LATENCY]", "fetching_isochrones")
 def getIsochrone(start_point: dict, method: str,
                  travel_time_seconds: int) -> dict:
     """
@@ -251,6 +290,7 @@ def getIsochrone(start_point: dict, method: str,
     }
 
 
+@baseline_measurement("[GIS MATH]", "getCommon")
 def getCommon(isochrones: list) -> dict:
     """
     Compute the intersection area of all isochrones (using a simple grid sampling method, no shapely dependency).
@@ -337,6 +377,7 @@ def getCommon(isochrones: list) -> dict:
     }
 
 
+@baseline_measurement("[API LATENCY]", "searching_meeting_places")
 def getSuggestions(isochrones: list, placetype: str,
                    requires: dict = None) -> list:
     """
