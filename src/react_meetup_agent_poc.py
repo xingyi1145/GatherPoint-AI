@@ -123,7 +123,7 @@ def build_agent() -> AgentExecutor:
     return AgentExecutor(
         agent=agent,
         tools=tools,
-        verbose=True,
+        verbose=False,
         handle_parsing_errors=True,
         max_iterations=6,
     )
@@ -132,7 +132,7 @@ def build_agent() -> AgentExecutor:
 def main() -> None:
     executor = build_agent()
 
-    prompt = "Alice is at University of British Columbia, Vancouver and will DRIVE. Bob is at Yonge and Bloor, Toronto and will DRIVE. Find a cafe for them to meet at."
+    prompt = "Alice is at Union Station, Toronto and will DRIVE. Bob is at Yonge and Bloor, Toronto and will DRIVE. Find a cafe for them to meet at."
 
     @timing_measurement("[LLM LATENCY]", "agent_reasoning")
     def run_agent():
