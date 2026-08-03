@@ -2,23 +2,13 @@ from __future__ import annotations
 import json
 import time
 from functools import wraps
-from typing import Dict, List
-
-from pydantic import BaseModel, ConfigDict, Field
 from langchain.agents import AgentExecutor
 from langchain.agents.react.agent import create_react_agent
 from langchain_core.prompts import PromptTemplate
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
-from google_api_based_gis_tools import (
-    getCommon,
-    getIsochrone,
-    getSuggestions,
-    parse_travel_time,
-    queryAI,
-    sortPlaces,
-)
+from google_api_based_gis_tools import full_pipeline
 
 
 def timing_measurement(label: str, name: str):
@@ -48,110 +38,40 @@ BASE_URL = "http://127.0.0.1:8001/v1"  # Note: ensure VSCode port forwarding is 
 API_KEY = "EMPTY"  # vLLM local endpoints usually accept any string here unless auth is explicitly configured
 MODEL_NAME = "gatherpoint-local"
 
-
-class MeetingSpotToolInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    user_coordinates: List[Dict[str, float]] = Field(
-        ...,
-        min_length=1,
-        description="List of user coordinate dictionaries, each with latitude and longitude values.",
-    )
-    transport_modes: List[str] = Field(
-        ...,
-        min_length=1,
-        description="Travel modes for each participant, in the same order as user_coordinates.",
-    )
-    place_type: str = Field(..., description="Venue type to search for, such as cafe or restaurant.")
-    travel_time: str = Field("30m", description="Travel-time budget for each participant.")
-
-
-def _normalize_coordinate_entry(entry: dict, index: int) -> dict:
-    latitude = entry.get("latitude") if entry.get("latitude") is not None else entry.get("lat")
-    longitude = entry.get("longitude") if entry.get("longitude") is not None else entry.get("lng")
-
-    if latitude is None or longitude is None:
-        raise ValueError(
-            f"Coordinate #{index + 1} must include latitude and longitude values."
-        )
-
-    # FIX: Return exactly 'latitude' and 'longitude' so the GIS tool's API payload builds correctly
-    return {"latitude": float(latitude), "longitude": float(longitude)}
-
-
-def find_optimal_meeting_spots(
-    user_coordinates: List[Dict[str, float]],
-    transport_modes: List[str],
-    place_type: str,
-    travel_time: str = "30m",
-) -> str:
-    """Find the best meetup recommendations from raw coordinate dictionaries.
+@tool
+def find_optimal_meeting_spots(input_json_str: str) -> str:
+    """Find the best meetup recommendations for multiple participants.
 
     Input format:
-    - user_coordinates must be a list of dictionaries that already contain coordinates.
-    - Each coordinate dictionary must include latitude and longitude values, or lat and lng aliases.
-    - transport_modes must align with user_coordinates one-for-one.
-    - Example: {"user_coordinates": [{"latitude": 43.6426, "longitude": -79.3871}, {"latitude": 43.669, "longitude": -79.3832}], "transport_modes": ["WALK", "DRIVE"], "place_type": "cafe", "travel_time": "30m"}
-    - Do not pass addresses, city names, or place names here; geocoding must happen upstream on the local machine.
+    - A single JSON string with exactly these keys: user_addresses, transport_modes, place_type, and travel_time.
+    - Example: '{"user_addresses": ["Union Station", "Yonge and Bloor"], "transport_modes": ["WALK", "BICYCLE"], "place_type": "cafe", "travel_time": "30m"}'
     """
     try:
-        if len(user_coordinates) != len(transport_modes):
-            return (
-                "Observation: Error executing GIS tool: user_coordinates and transport_modes must "
-                "have the same length."
-            )
+        clean_str = input_json_str.strip().strip("'").strip('"')
+        args = json.loads(clean_str)
+        
+        user_addresses = args.get("user_addresses", [])
+        transport_modes = args.get("transport_modes", [])
+        place_type = args.get("place_type", "cafe")
+        # Extract travel_time, default to 30m
+        travel_time = args.get("travel_time", "30m")
 
-        normalized_points = [
-            _normalize_coordinate_entry(point, index)
-            for index, point in enumerate(user_coordinates)
-        ]
-        travel_time_seconds = parse_travel_time(travel_time)
+        # Pass travel_time to the pipeline
+        result = full_pipeline(user_addresses, transport_modes, place_type, travel_time)
 
-        isochrones = []
-        for point, mode in zip(normalized_points, transport_modes):
-            iso = getIsochrone(point, mode, travel_time_seconds)
-            isochrones.append(iso)
-
-        common = getCommon(isochrones)
-        if not common.get("intersection_valid"):
-            return (
-                "Observation: The isochrones of all participants have no overlap; consider "
-                "increasing the travel_time."
-            )
-
-        suggestions = getSuggestions(isochrones, place_type)
-        sorted_places = sortPlaces(suggestions)[:5]
-        final_text = queryAI(sorted_places)
+        if isinstance(result, dict) and "error" in result:
+             return f"Observation: API Error - {result['error']}. Please try adjusting your parameters, such as increasing the travel_time."
+        
+        final_text = result.get("ai_text", str(result))
         if "Based on the above information" in final_text:
-            final_text = final_text.split("Based on the above information")[0].rstrip()
-
+            final_text = final_text.split("Based on the above information")[0]
+        
         return final_text
 
+    except json.JSONDecodeError:
+        return "Observation: Error parsing input. You must provide a valid JSON string with 'user_addresses', 'transport_modes', and 'place_type'."
     except Exception as e:
         return f"Observation: Error executing GIS tool: {str(e)}. Please check your inputs and try again."
-
-
-class JSONStructuredTool(StructuredTool):
-    def _parse_input(self, tool_input):
-        if isinstance(tool_input, str):
-            tool_input = json.loads(tool_input)
-
-        if self.args_schema is not None:
-            # FIX: Copilot used V1 syntax. We use model_validate and model_dump for V2.
-            result = self.args_schema.model_validate(tool_input)
-            return {key: getattr(result, key) for key in tool_input if key in result.model_dump()}
-
-        return tool_input
-
-find_optimal_meeting_spots_tool = JSONStructuredTool.from_function(
-    func=find_optimal_meeting_spots,
-    name="find_optimal_meeting_spots",
-    description=(
-        "Find meetup recommendations from raw coordinate dictionaries. Use only when the input "
-        "already contains latitude/longitude values and not text addresses."
-    ),
-    args_schema=MeetingSpotToolInput,
-)
 
 
 PROMPT = PromptTemplate.from_template(
@@ -160,12 +80,11 @@ PROMPT = PromptTemplate.from_template(
     {tools}
     
     Rules:
-    - Extract raw coordinate dictionaries from the upstream request.
+    - Extract all user addresses.
     - Extract transport modes. Default to DRIVE if missing.
     - Extract the venue type (place_type).
     - Default travel_time is "30m".
-    - When calling find_optimal_meeting_spots, Action Input must be a valid JSON object containing user_coordinates, transport_modes, place_type, and travel_time. Example: {{"user_coordinates": [{{"latitude": 43.6426, "longitude": -79.3871}}, {{"latitude": 43.6690, "longitude": -79.3832}}], "transport_modes": ["WALK", "DRIVE"], "place_type": "cafe", "travel_time": "30m"}}
-    - Never send addresses, city names, or place names to the tool.
+    - When calling find_optimal_meeting_spots, Action Input must be a valid JSON object. Example: {{"user_addresses": ["Union Station, Toronto"], "transport_modes": ["WALK"], "place_type": "cafe", "travel_time": "30m"}}
     
     EDGE CASE HANDLING:
     - If you receive an Observation stating "no overlap" or that participants are too far apart, you MUST call the tool again and increase the "travel_time" (e.g., to "45m" or "1h").
@@ -198,7 +117,7 @@ def build_agent() -> AgentExecutor:
         temperature=0,
     )
 
-    tools = [find_optimal_meeting_spots_tool]
+    tools = [find_optimal_meeting_spots]
     agent = create_react_agent(llm=llm, tools=tools, prompt=PROMPT)
 
     return AgentExecutor(
@@ -213,12 +132,7 @@ def build_agent() -> AgentExecutor:
 def main() -> None:
     executor = build_agent()
 
-    prompt = (
-        # Changed Alice's coordinates to be near High Park in Toronto
-        'Alice is at {"latitude": 43.6465, "longitude": -79.4637} and will DRIVE. ' 
-        'Bob is at {"latitude": 43.6690, "longitude": -79.3832} and will DRIVE. '
-        'Find a cafe for them to meet at.'
-    )
+    prompt = "Alice is at University of British Columbia, Vancouver and will DRIVE. Bob is at Yonge and Bloor, Toronto and will DRIVE. Find a cafe for them to meet at."
 
     @timing_measurement("[LLM LATENCY]", "agent_reasoning")
     def run_agent():
