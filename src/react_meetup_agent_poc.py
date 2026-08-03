@@ -1,10 +1,14 @@
 from __future__ import annotations
+import json
 import time
 from functools import wraps
+from typing import Dict, List
+
+from pydantic import BaseModel, ConfigDict, Field
 from langchain.agents import AgentExecutor
 from langchain.agents.react.agent import create_react_agent
 from langchain_core.prompts import PromptTemplate
-from langchain_core.tools import tool
+from langchain_core.tools import StructuredTool
 from langchain_openai import ChatOpenAI
 
 from google_api_based_gis_tools import (
@@ -44,6 +48,24 @@ BASE_URL = "http://127.0.0.1:8001/v1"  # Note: ensure VSCode port forwarding is 
 API_KEY = "EMPTY"  # vLLM local endpoints usually accept any string here unless auth is explicitly configured
 MODEL_NAME = "gatherpoint-local"
 
+
+class MeetingSpotToolInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_coordinates: List[Dict[str, float]] = Field(
+        ...,
+        min_length=1,
+        description="List of user coordinate dictionaries, each with latitude and longitude values.",
+    )
+    transport_modes: List[str] = Field(
+        ...,
+        min_length=1,
+        description="Travel modes for each participant, in the same order as user_coordinates.",
+    )
+    place_type: str = Field(..., description="Venue type to search for, such as cafe or restaurant.")
+    travel_time: str = Field("30m", description="Travel-time budget for each participant.")
+
+
 def _normalize_coordinate_entry(entry: dict, index: int) -> dict:
     latitude = entry.get("latitude") if entry.get("latitude") is not None else entry.get("lat")
     longitude = entry.get("longitude") if entry.get("longitude") is not None else entry.get("lng")
@@ -53,13 +75,13 @@ def _normalize_coordinate_entry(entry: dict, index: int) -> dict:
             f"Coordinate #{index + 1} must include latitude and longitude values."
         )
 
-    return {"lat": float(latitude), "lng": float(longitude)}
+    # FIX: Return exactly 'latitude' and 'longitude' so the GIS tool's API payload builds correctly
+    return {"latitude": float(latitude), "longitude": float(longitude)}
 
 
-@tool
 def find_optimal_meeting_spots(
-    user_coordinates: list[dict[str, float]],
-    transport_modes: list[str],
+    user_coordinates: List[Dict[str, float]],
+    transport_modes: List[str],
     place_type: str,
     travel_time: str = "30m",
 ) -> str:
@@ -109,6 +131,29 @@ def find_optimal_meeting_spots(
         return f"Observation: Error executing GIS tool: {str(e)}. Please check your inputs and try again."
 
 
+class JSONStructuredTool(StructuredTool):
+    def _parse_input(self, tool_input):
+        if isinstance(tool_input, str):
+            tool_input = json.loads(tool_input)
+
+        if self.args_schema is not None:
+            # FIX: Copilot used V1 syntax. We use model_validate and model_dump for V2.
+            result = self.args_schema.model_validate(tool_input)
+            return {key: getattr(result, key) for key in tool_input if key in result.model_dump()}
+
+        return tool_input
+
+find_optimal_meeting_spots_tool = JSONStructuredTool.from_function(
+    func=find_optimal_meeting_spots,
+    name="find_optimal_meeting_spots",
+    description=(
+        "Find meetup recommendations from raw coordinate dictionaries. Use only when the input "
+        "already contains latitude/longitude values and not text addresses."
+    ),
+    args_schema=MeetingSpotToolInput,
+)
+
+
 PROMPT = PromptTemplate.from_template(
     """You are a helpful meetup planning assistant. 
     You have access to the following tools:
@@ -153,7 +198,7 @@ def build_agent() -> AgentExecutor:
         temperature=0,
     )
 
-    tools = [find_optimal_meeting_spots]
+    tools = [find_optimal_meeting_spots_tool]
     agent = create_react_agent(llm=llm, tools=tools, prompt=PROMPT)
 
     return AgentExecutor(
@@ -169,7 +214,8 @@ def main() -> None:
     executor = build_agent()
 
     prompt = (
-        'Alice is at {"latitude": 49.2606, "longitude": -123.2460} and will DRIVE. '
+        # Changed Alice's coordinates to be near High Park in Toronto
+        'Alice is at {"latitude": 43.6465, "longitude": -79.4637} and will DRIVE. ' 
         'Bob is at {"latitude": 43.6690, "longitude": -79.3832} and will DRIVE. '
         'Find a cafe for them to meet at.'
     )
