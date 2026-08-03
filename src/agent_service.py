@@ -243,38 +243,20 @@ Latest user request:
 def _invoke_local_planning_agent(
     prompt: str,
 ) -> str:
-    """
-    Invoke the local GatherPoint LLM/agent implementation.
-
-    This function is deliberately isolated so Person 2 can connect the existing
-    ReAct agent, a direct vLLM/OpenAI-compatible endpoint, or a local LangChain
-    workflow without changing app.py or the public run_agent_turn() contract.
-
-    Args:
-        prompt: Fully assembled bounded planning prompt.
-
-    Returns:
-        Assistant text ready for the Streamlit conversation panel.
-
-    Raises:
-        RuntimeError: When local inference has not been connected or fails.
-    """
-    bounded_prompt = prompt.strip()
-
     try:
         executor = build_agent()
-        result = executor.invoke({"input": bounded_prompt})
-    except Exception as exc:
-        return f"Local planning agent error: {exc}"
+        result = executor.invoke({"input": prompt})
+    except Exception as e:
+        # Catch errors gracefully so the UI doesn't completely break
+        raise RuntimeError(f"Local agent error: {str(e)}")
 
     if isinstance(result, dict):
-        output = result.get("output", "")
+        output = str(result.get("output", "")).strip()
     else:
-        output = str(result)
+        output = str(result).strip()
 
-    output = str(output).strip()
     if not output:
-        return "Local planning agent error: the agent returned an empty response."
+        raise RuntimeError("Local agent returned an empty response.")
 
     return output
 
@@ -325,6 +307,17 @@ def run_agent_turn(
     # fair location, transit, budget, and dietary decision-making.
     raw_profiles = load_group_profiles(group_id)
     profiles = [normalize_profile(profile) for profile in raw_profiles]
+
+    if not profiles:
+        # The default workspace starts with no persisted profiles, so a direct
+        # ReAct run would loop trying to ask for unavailable tool actions.
+        answer = (
+            "I need each participant's location and travel mode before I can "
+            "recommend a meetup spot. If you have them, send the addresses plus "
+            "any budget, dietary needs, and preferred time."
+        )
+        memories = retrieve_relevant_memories(group_id, user_message)
+        return answer, profiles, memories
 
     # Retrieve only memory relevant to this request; unrelated historical data
     # should not unnecessarily increase local inference context.
