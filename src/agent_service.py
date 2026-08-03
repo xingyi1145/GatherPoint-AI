@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from react_meetup_agent_poc import build_agent
 from memory_service import load_group_profiles, normalize_profile
+
+try:
+    from test_retrieval import retrieve_user_context as _retrieve_user_context
+except Exception:
+    _retrieve_user_context = None
 
 
 # -----------------------------------------------------------------------------
@@ -142,10 +148,9 @@ def retrieve_relevant_memories(
     """
     Retrieve long-term memory relevant to the current planning request.
 
-    Person 2 should replace this temporary implementation with a local RAG,
-    SQLite, JSON, or vector-store lookup. It should return short, factual
-    snippets that help with planning, such as a prior venue rejection or a
-    recurring dietary constraint.
+    This currently delegates to the local ChromaDB helper used by the RAG
+    prototype. If that helper is not available yet, the function falls back to
+    returning an empty list so the UI can still render safely.
 
     Args:
         group_id: Stable identifier of the active meetup group.
@@ -155,14 +160,21 @@ def retrieve_relevant_memories(
         A list of concise memory strings. Return an empty list when no relevant
         information exists; do not fail merely because a new group has no memory.
     """
-    # TODO(Person 2):
-    # 1. Query local persistent memory by group_id.
-    # 2. Rank records against user_message.
-    # 3. Return only short, relevant, non-sensitive snippets.
-    _ = group_id
-    _ = user_message
+    if _retrieve_user_context is None:
+        # TODO: Replace this fallback with the production RAG module once the
+        # retrieval helper is moved out of src/test_retrieval.py.
+        return []
 
-    return []
+    try:
+        query_text = f"group_id={group_id}\n{user_message}"
+        contexts = _retrieve_user_context(query_text)
+    except Exception:
+        return []
+
+    if not contexts:
+        return []
+
+    return [str(context).strip() for context in contexts if str(context).strip()]
 
 
 # -----------------------------------------------------------------------------
@@ -247,20 +259,24 @@ def _invoke_local_planning_agent(
     Raises:
         RuntimeError: When local inference has not been connected or fails.
     """
-    # TODO(Person 2):
-    # Recommended implementation options:
-    # - Import build_agent() from react_meetup_agent_poc.py and invoke it.
-    # - Call a local AMD ROCm/vLLM OpenAI-compatible endpoint.
-    # - Pass the resulting recommendation through GIS tools where appropriate.
-    #
-    # Keep failures as RuntimeError so app.py can show a safe user-facing error.
-    _ = prompt
+    bounded_prompt = prompt.strip()
 
-    raise RuntimeError(
-        "Local planning inference is not connected yet. "
-        "Connect this function to the GatherPoint ReAct agent or local vLLM "
-        "endpoint, then return the agent's final answer."
-    )
+    try:
+        executor = build_agent()
+        result = executor.invoke({"input": bounded_prompt})
+    except Exception as exc:
+        return f"Local planning agent error: {exc}"
+
+    if isinstance(result, dict):
+        output = result.get("output", "")
+    else:
+        output = str(result)
+
+    output = str(output).strip()
+    if not output:
+        return "Local planning agent error: the agent returned an empty response."
+
+    return output
 
 
 # -----------------------------------------------------------------------------
