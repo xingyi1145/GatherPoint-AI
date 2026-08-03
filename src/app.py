@@ -3,7 +3,12 @@ from __future__ import annotations
 import streamlit as st
 
 from agent_service import run_agent_turn
-from memory_service import add_message, new_conversation, normalize_profile
+from memory_service import (
+    add_message,
+    load_group_profiles,
+    new_conversation,
+    normalize_profile,
+)
 
 
 # -----------------------------------------------------------------------------
@@ -12,7 +17,6 @@ from memory_service import add_message, new_conversation, normalize_profile
 # Must be called before any other Streamlit rendering command.
 st.set_page_config(
     page_title="GatherPoint | Plan together",
-    page_icon="📍",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -26,6 +30,39 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+        /* --- FORCE SIDEBAR TO STAY OPEN --- */
+        /* Hide the inside collapse button (<<) */
+        [data-testid="stSidebarCollapseButton"] {
+            display: none !important;
+        }
+
+        /* 1. Completely hide the collapse/expand arrow */
+        [data-testid="collapsedControl"] {
+            display: none !important;
+        }
+
+        /* 2. Force the sidebar to remain visible and locked in place */
+        [data-testid="stSidebar"] {
+            display: flex !important;
+            transform: none !important;
+            visibility: visible !important;
+            min-width: 16rem !important;
+        }
+
+        /* 3. Ensure the main chat area doesn't overlap the locked sidebar */
+        [data-testid="stSidebar"] + section {
+            margin-left: 0 !important;
+        }
+
+        /* 4. Force the sidebar to remain visible and locked in place */
+        [data-testid="stSidebar"] {
+            display: flex !important;
+            transform: none !important;
+            visibility: visible !important;
+            min-width: 16rem !important;
+            overflow-x: hidden !important; /* <--- ADD THIS LINE */
+        }
+
         :root {
             --bg: #07111f;
             --panel: #0d1b2d;
@@ -66,14 +103,35 @@ st.markdown(
             padding-bottom: 2rem;
         }
 
-        /* Restyle the sidebar as a persistent workspace panel. */
-        [data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #091727 0%, #07111f 100%);
-            border-right: 1px solid var(--line);
+        [data-testid="collapsedControl"] {
         }
 
-        [data-testid="stSidebar"] > div:first-child {
-            padding-top: 1.3rem;
+        section[data-testid="stSidebar"], div[data-testid="stSidebar"] {
+            min-width: 320px;
+            max-width: 320px;
+            width: 320px !important;
+            position: fixed;
+            left: 0;
+            top: 0;
+            height: 100vh;
+            overflow-y: auto;
+            border-right: 1px solid var(--line);
+            background: linear-gradient(180deg, rgba(9, 23, 39, 0.98), rgba(7, 17, 31, 0.98));
+            z-index: 1000;
+        }
+
+        section.main {
+            margin-left: 320px;
+        }
+
+        section[data-testid="stSidebar"] > div:first-child,
+        div[data-testid="stSidebar"] > div:first-child {
+            padding-top: 1.1rem;
+        }
+
+        section[data-testid="stSidebar"] [data-testid="stSidebarContent"],
+        div[data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+            padding-bottom: 1.25rem;
         }
 
         h1, h2, h3, p, span, label {
@@ -146,6 +204,14 @@ st.markdown(
             margin-bottom: 0.9rem;
         }
 
+        .sidebar-section {
+            margin-top: 1rem;
+        }
+
+        .sidebar-row {
+            margin-bottom: 0.55rem;
+        }
+
         .profile-card {
             border-left: 3px solid var(--green);
             background: rgba(20, 46, 71, 0.64);
@@ -167,58 +233,21 @@ st.markdown(
             margin-top: 0.2rem;
         }
 
-        .metric-card {
-            border: 1px solid var(--line);
-            background: rgba(16, 36, 58, 0.72);
-            border-radius: 14px;
-            padding: 0.7rem;
-            text-align: center;
-        }
-
-        .metric-value {
-            color: var(--green);
-            font-size: 1.3rem;
-            font-weight: 800;
-        }
-
-        .metric-label {
-            color: var(--muted);
-            font-size: 0.7rem;
-            margin-top: 0.18rem;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-        }
-
-        .plan-item {
-            border: 1px solid var(--line);
-            background: linear-gradient(
-                135deg,
-                rgba(22, 48, 74, 0.88),
-                rgba(13, 30, 49, 0.88)
-            );
-            border-radius: 13px;
-            padding: 0.8rem;
-            margin-top: 0.65rem;
-        }
-
-        .plan-number {
+        .sidebar-status {
             display: inline-block;
-            color: #07111f;
-            background: var(--green);
-            width: 1.5rem;
-            height: 1.5rem;
-            text-align: center;
-            border-radius: 50%;
-            font-size: 0.78rem;
-            line-height: 1.5rem;
-            font-weight: 800;
-            margin-right: 0.45rem;
+            border: 1px solid rgba(57, 215, 170, 0.32);
+            background: rgba(57, 215, 170, 0.10);
+            color: #8df2d1;
+            border-radius: 99px;
+            padding: 0.28rem 0.6rem;
+            font-size: 0.72rem;
+            font-weight: 700;
         }
 
-        .plan-title {
-            color: var(--text);
-            font-weight: 700;
-            font-size: 0.88rem;
+        .sidebar-muted {
+            color: var(--muted);
+            font-size: 0.82rem;
+            line-height: 1.5;
         }
 
         .tag {
@@ -259,19 +288,6 @@ st.markdown(
             background: rgba(12, 29, 47, 0.9);
         }
 
-        .welcome-card {
-            border: 1px dashed rgba(57, 215, 170, 0.42);
-            background: rgba(57, 215, 170, 0.06);
-            border-radius: 16px;
-            padding: 1.1rem;
-            color: #d8e8f6;
-            margin: 0.35rem 0 1rem 0;
-        }
-
-        .welcome-card strong {
-            color: #8df2d1;
-        }
-
         div.stButton > button {
             border-radius: 10px;
             border: 1px solid rgba(57, 215, 170, 0.45);
@@ -293,6 +309,56 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# -----------------------------------------------------------------------------
+# SIDEBAR: Context & System Status
+# -----------------------------------------------------------------------------
+with st.sidebar:
+    
+    # 1. New Plan Button
+    if st.button("New plan", use_container_width=True, type="primary"):
+        # Clear the chat history when starting a new plan
+        st.session_state.conversation = {"messages": []} 
+        st.rerun()
+
+    st.divider()
+
+    # 2. Active Group
+    st.header("Workspace")
+    st.selectbox(
+        "Active group",
+        options=["Hackathon Team", "Weekend Hike", "Dinner Squad"],
+        index=0,
+        key="active_group_selector"
+    )
+    
+    st.divider()
+
+    # 3. Saved Profiles (Dynamic Mapping)
+    st.subheader("Saved Profiles")
+    
+    # Check if we have dynamic profiles loaded from your SQLite/JSON backend
+    if "loaded_profiles" in st.session_state and st.session_state.loaded_profiles:
+        for profile in st.session_state.loaded_profiles:
+            # Assuming profile is a dict: {'name': 'Alice', 'transport': 'Transit', 'address': '123 St', 'notes': 'Vegan'}
+            st.markdown(f"**{profile.get('name', 'Unknown')}**")
+            st.caption(f"Transport: {profile.get('transport', 'N/A')}")
+            st.caption(f"Address: {profile.get('address', 'N/A')}")
+            
+            # Conditionally render extra constraints if they exist
+            if profile.get('notes'):
+                st.caption(f"Notes: {profile.get('notes')}")
+            
+            st.write("") # Small spacer between profiles
+    else:
+        st.caption("No saved profiles for this group.")
+
+    st.divider()
+
+    # 4 & 5. Status Indicators
+    st.subheader("System Status")
+    st.caption("Local Memory: Active")
+    st.caption("Local vLLM: Online")
 
 
 # -----------------------------------------------------------------------------
@@ -341,19 +407,16 @@ def reset_conversation() -> None:
     st.session_state.last_answer = ""
 
 
-# -----------------------------------------------------------------------------
-# Reusable UI Components
-# -----------------------------------------------------------------------------
-
-def profile_card(raw_profile: dict) -> None:
+def sync_group_profiles() -> None:
     """
-    Render a compact Friend Profile card in the left workspace sidebar.
+    Load the visible profile cards for the active group.
+    """
+    st.session_state.loaded_profiles = load_group_profiles(st.session_state.group_id)
 
-    The profile is normalized before rendering so missing values from SQLite,
-    JSON, or future profile storage do not break the interface.
 
-    Args:
-        raw_profile: A potentially incomplete Friend Profile dictionary.
+def render_profile_card(raw_profile: dict) -> None:
+    """
+    Render one compact Friend Profile card in the sidebar.
     """
     profile = normalize_profile(raw_profile)
 
@@ -363,12 +426,12 @@ def profile_card(raw_profile: dict) -> None:
     st.markdown(
         f"""
         <div class="profile-card">
-            <div class="profile-name">● {profile["name"]}</div>
+            <div class="profile-name">{profile["name"]}</div>
             <div class="profile-detail">
-                📍 {profile["address"]}<br>
-                🚇 {profile["transit_mode"]} &nbsp; · &nbsp; 💳 {profile["budget"]}<br>
-                🥗 {dietary}<br>
-                ✨ {interests}
+                {profile["address"]}<br>
+                {profile["transit_mode"]} &nbsp; · &nbsp; {profile["budget"]}<br>
+                {dietary}<br>
+                {interests}
             </div>
         </div>
         """,
@@ -376,150 +439,15 @@ def profile_card(raw_profile: dict) -> None:
     )
 
 
-def render_live_plan() -> None:
+def render_sidebar_profile_line(raw_profile: dict) -> None:
     """
-    Render the right-side Live Plan panel.
-
-    The panel makes GatherPoint's reasoning inputs visible during a demo:
-    group size, number of conversation turns, profile-derived constraints,
-    relevant retrieved memory, compressed older context, and recommendation
-    readiness.
-
-    The final venue ranking can later be added here by extending
-    agent_service.run_agent_turn() to return structured venue records.
+    Render one compact constraint summary line for the sidebar.
     """
-    profiles = st.session_state.loaded_profiles
-    messages = st.session_state.conversation.get("messages", [])
-    memories = st.session_state.retrieved_memories
-    summary = st.session_state.conversation.get("summary", "")
+    profile = normalize_profile(raw_profile)
+    dietary = ", ".join(profile["dietary_restrictions"]) or "No restrictions"
+    transit = profile["transit_mode"]
 
-    st.markdown('<p class="section-label">Live Plan</p>', unsafe_allow_html=True)
-
-    # Display three compact metrics at the top of the planning panel.
-    metric_one, metric_two, metric_three = st.columns(3)
-
-    with metric_one:
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-value">{len(profiles)}</div>
-                <div class="metric-label">Friends</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with metric_two:
-        st.markdown(
-            f"""
-            <div class="metric-card">
-                <div class="metric-value">{len(messages) // 2}</div>
-                <div class="metric-label">Turns</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with metric_three:
-        st.markdown(
-            """
-            <div class="metric-card">
-                <div class="metric-value">Local</div>
-                <div class="metric-label">Inference</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # Explain the planning context that should be used by the orchestration layer.
-    st.markdown(
-        """
-        <div class="panel">
-            <div class="section-label">Decision context</div>
-            <div style="color:#cbd9e7; font-size:0.84rem; line-height:1.6;">
-                GatherPoint combines friend preferences, recent conversation,
-                retrieved memory, and GIS results before recommending a plan.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Convert active Profile fields into visible decision-constraint tags.
-    if profiles:
-        dietary_tags = []
-        transit_tags = []
-
-        for raw_profile in profiles:
-            profile = normalize_profile(raw_profile)
-
-            dietary_tags.extend(profile["dietary_restrictions"])
-
-            if profile["transit_mode"] != "unspecified":
-                transit_tags.append(profile["transit_mode"])
-
-        st.markdown(
-            '<p class="section-label">Active constraints</p>',
-            unsafe_allow_html=True,
-        )
-
-        all_tags = sorted(set(dietary_tags + transit_tags))
-
-        if all_tags:
-            st.markdown(
-                "".join(f'<span class="tag">{tag}</span>' for tag in all_tags),
-                unsafe_allow_html=True,
-            )
-        else:
-            st.caption(
-                "Profile constraints will appear here after Person 2 connects storage."
-            )
-    else:
-        st.info("Connect Friend Profiles to populate the group context.")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown(
-        '<p class="section-label">Memory retrieval</p>',
-        unsafe_allow_html=True,
-    )
-
-    # Display RAG/long-term-memory results returned by agent_service.py.
-    if memories:
-        for memory in memories:
-            st.markdown(
-                f'<div class="memory-item">{memory}</div>',
-                unsafe_allow_html=True,
-            )
-    else:
-        st.caption("No long-term memory retrieved for the current request.")
-
-    # Older conversation can be compacted by memory_service.py to keep the
-    # local LLM prompt within its available inference context window.
-    if summary:
-        with st.expander("View compressed earlier conversation"):
-            st.write(summary)
-
-    # This status card appears after the first successful assistant response.
-    if st.session_state.last_answer:
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown(
-            '<p class="section-label">Recommendation status</p>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            """
-            <div class="plan-item">
-                <span class="plan-number">✓</span>
-                <span class="plan-title">Agent response generated</span>
-                <div class="profile-detail">
-                    The latest recommendation is shown in the conversation panel.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    st.caption(f'{profile["name"]}: {dietary} · {transit}')
 
 
 # -----------------------------------------------------------------------------
@@ -527,255 +455,88 @@ def render_live_plan() -> None:
 # -----------------------------------------------------------------------------
 initialize_state()
 
+if not st.session_state.loaded_profiles:
+    sync_group_profiles()
+
 
 # -----------------------------------------------------------------------------
 # Header
 # -----------------------------------------------------------------------------
-# The header communicates the product's core value proposition and local
-# AMD/ROCm inference story before a judge or user starts interacting.
-header_left, header_right = st.columns([5, 1.35])
-
-with header_left:
-    st.markdown(
-        """
-        <div class="hero">
-            <div class="eyebrow">Local-first group coordination</div>
-            <h1 class="hero-title">GatherPoint</h1>
-            <p class="hero-subtitle">
-                Turn your group’s locations, schedules, budgets, transit preferences,
-                and food constraints into a meetup plan that works for everyone.
-            </p>
-            <span class="local-badge">
-                ● AMD ROCm · Local vLLM · Context-aware planning
-            </span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with header_right:
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # Reset only the planning session, preserving the selected group ID.
-    if st.button("↻ New plan", use_container_width=True):
-        reset_conversation()
-        st.rerun()
-
-    st.caption(
-        "Model output is constrained to 256 tokens. Conversation history is "
-        "compacted for local 4,096-token inference."
-    )
+st.markdown(
+    """
+    <div class="hero">
+        <h1 class="hero-title">GatherPoint</h1>
+        <p class="hero-subtitle">
+            Local-first group coordination powered by AMD ROCm & vLLM.
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # -----------------------------------------------------------------------------
-# Group Workspace Sidebar
+# Main Chat Workspace
 # -----------------------------------------------------------------------------
-with st.sidebar:
-    st.markdown("## 📍 Workspace")
-    st.caption("Manage the meetup group that GatherPoint should remember.")
+st.markdown('<p class="section-label">Conversation</p>', unsafe_allow_html=True)
 
-    # The group ID becomes the key used for Profile storage and memory lookup.
-    group_id = st.text_input(
-        "Group workspace",
-        value=st.session_state.group_id,
-        placeholder="friday-dinner-crew",
-    ).strip()
+for message in st.session_state.conversation["messages"]:
+    avatar = "🧑" if message["role"] == "user" else "📍"
 
-    # If the user changes workspace, clear old visible Profiles to avoid
-    # mistakenly showing profiles from the previously selected group.
-    if group_id and group_id != st.session_state.group_id:
-        st.session_state.group_id = group_id
-        st.session_state.loaded_profiles = []
+    with st.chat_message(message["role"], avatar=avatar):
+        st.markdown(message["content"])
 
-    st.markdown("---")
-    st.markdown("### Group members")
+prompt = st.chat_input(
+    "Ask GatherPoint to plan a meetup...",
+    key="chat_input",
+)
 
-    # Real Profile records appear after agent_service.py connects persistence.
-    if st.session_state.loaded_profiles:
-        for raw_profile in st.session_state.loaded_profiles:
-            profile_card(raw_profile)
-    else:
-        st.info(
-            "Profiles will appear here when Person 2 connects the SQLite/JSON "
-            "profile service."
-        )
+if prompt:
+    add_message(st.session_state.conversation, "user", prompt)
 
-        # These preview cards demonstrate the intended UI without pretending
-        # that mock users are persistent data.
-        st.markdown(
-            """
-            <div class="profile-card">
-                <div class="profile-name">Preview: Alice</div>
-                <div class="profile-detail">
-                    📍 Union Station, Toronto<br>
-                    🚇 WALK · 💳 $$<br>
-                    🥗 Vegetarian
-                </div>
-            </div>
-            <div class="profile-card">
-                <div class="profile-name">Preview: Bob</div>
-                <div class="profile-detail">
-                    📍 Yonge & Bloor, Toronto<br>
-                    🚇 TRANSIT · 💳 $<br>
-                    🥗 No restrictions
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    with st.chat_message("user", avatar="🧑"):
+        st.markdown(prompt)
 
-    st.markdown("---")
-    st.markdown("### Local memory")
+    with st.chat_message("assistant", avatar="📍"):
+        status = st.status("GatherPoint is planning...", expanded=True)
 
-    # Recent messages and summary availability make multi-turn memory observable.
-    recent_messages = len(st.session_state.conversation.get("messages", []))
-    summary_exists = bool(st.session_state.conversation.get("summary", ""))
+        try:
+            status.write("Loading Friend Profiles and saved group context...")
+            status.write(
+                "Preparing a bounded multi-turn prompt for local inference..."
+            )
+            status.write(
+                "Checking available meetup tools and constraints..."
+            )
 
-    st.caption(f"Recent messages retained: {recent_messages}/6")
-    st.caption(
-        f"Earlier summary: {'available' if summary_exists else 'not needed yet'}"
-    )
-    st.caption("RAG retrieval: ready for Person 1 integration")
+            answer, profiles, memories = run_agent_turn(
+                group_id=st.session_state.group_id,
+                user_message=prompt,
+                conversation=st.session_state.conversation,
+            )
 
+            st.session_state.loaded_profiles = profiles
+            st.session_state.retrieved_memories = memories
+            st.session_state.last_answer = answer
 
-# -----------------------------------------------------------------------------
-# Main Three-Panel Workspace
-# -----------------------------------------------------------------------------
-# The sidebar is the first panel. The main area contains conversation and
-# Live Plan columns, creating the product's core planning workspace.
-chat_column, plan_column = st.columns([1.75, 1], gap="large")
+            status.update(
+                label="Recommendation ready",
+                state="complete",
+                expanded=False,
+            )
+            st.markdown(answer)
 
+        except RuntimeError as exc:
+            answer = (
+                "⚠️ **GatherPoint could not complete this request.**\n\n"
+                f"{exc}"
+            )
 
-# -----------------------------------------------------------------------------
-# Conversation Panel
-# -----------------------------------------------------------------------------
-with chat_column:
-    st.markdown('<p class="section-label">Conversation</p>', unsafe_allow_html=True)
+            status.update(
+                label="Unable to complete request",
+                state="error",
+                expanded=False,
+            )
+            st.error(answer)
 
-    # Empty-state guidance helps the user understand the product before the
-    # first turn and supplies demo-friendly starter prompts.
-    if not st.session_state.conversation["messages"]:
-        st.markdown(
-            """
-            <div class="welcome-card">
-                <strong>Ready to coordinate the group.</strong><br><br>
-                Ask naturally. GatherPoint should remember the selected group’s
-                profiles and the current conversation across turns.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
-            '<p class="section-label">Try a starting point</p>',
-            unsafe_allow_html=True,
-        )
-
-        chip_one, chip_two = st.columns(2)
-
-        with chip_one:
-            if st.button(
-                "🥗 Find a vegetarian dinner for Friday",
-                use_container_width=True,
-            ):
-                # Store the button request and process it in the normal chat flow.
-                st.session_state.prefill_prompt = (
-                    "Find a vegetarian dinner option for our group on Friday evening."
-                )
-
-        with chip_two:
-            if st.button(
-                "⏱ Keep everyone under 30 minutes away",
-                use_container_width=True,
-            ):
-                st.session_state.prefill_prompt = (
-                    "Find a meetup option that keeps everyone's travel time "
-                    "under 30 minutes."
-                )
-
-    # Re-render prior turns stored in the conversation state.
-    for message in st.session_state.conversation["messages"]:
-        avatar = "🧑" if message["role"] == "user" else "📍"
-
-        with st.chat_message(message["role"], avatar=avatar):
-            st.markdown(message["content"])
-
-    # The chat input is the standard free-form entry point.
-    prompt = st.chat_input(
-        "Ask GatherPoint to plan a meetup...",
-        key="chat_input",
-    )
-
-    # Prompt chips use the same agent path as direct user chat input.
-    if not prompt and st.session_state.get("prefill_prompt"):
-        prompt = st.session_state.pop("prefill_prompt")
-
-    if prompt:
-        # Save the user request before calling the agent so the current request
-        # is available in the short-term context sent to local inference.
-        add_message(st.session_state.conversation, "user", prompt)
-
-        with st.chat_message("user", avatar="🧑"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant", avatar="📍"):
-            # The status component transparently demonstrates each product step
-            # during live judging without exposing chain-of-thought.
-            status = st.status("GatherPoint is planning...", expanded=True)
-
-            try:
-                status.write("Loading Friend Profiles and saved group context...")
-                status.write(
-                    "Preparing a bounded multi-turn prompt for local inference..."
-                )
-                status.write(
-                    "Checking available meetup tools and constraints..."
-                )
-
-                # Service-layer contract:
-                # answer: UI-ready assistant text
-                # profiles: normalized group Profiles
-                # memories: retrieved RAG/long-term-memory snippets
-                answer, profiles, memories = run_agent_turn(
-                    group_id=st.session_state.group_id,
-                    user_message=prompt,
-                    conversation=st.session_state.conversation,
-                )
-
-                # Update all Live Plan data from the successful agent turn.
-                st.session_state.loaded_profiles = profiles
-                st.session_state.retrieved_memories = memories
-                st.session_state.last_answer = answer
-
-                status.update(
-                    label="Recommendation ready",
-                    state="complete",
-                    expanded=False,
-                )
-                st.markdown(answer)
-
-            except RuntimeError as exc:
-                # RuntimeError is the expected service-layer failure type for
-                # unavailable local inference, storage, RAG, or GIS services.
-                answer = (
-                    "⚠️ **GatherPoint could not complete this request.**\n\n"
-                    f"{exc}"
-                )
-
-                status.update(
-                    label="Unable to complete request",
-                    state="error",
-                    expanded=False,
-                )
-                st.error(answer)
-
-        # Store the assistant response even if an expected runtime failure
-        # occurs, so the conversation accurately records the interaction.
-        add_message(st.session_state.conversation, "assistant", answer)
-
-
-# -----------------------------------------------------------------------------
-# Live Plan Panel
-# -----------------------------------------------------------------------------
-with plan_column:
-    render_live_plan()
+    add_message(st.session_state.conversation, "assistant", answer)
