@@ -20,6 +20,7 @@ The system is split across two runtimes.
    - LLM serving: vLLM endpoint on port 8001
    - RAG + GIS microservice: src/rag_server.py on port 8000
    - HIP kernel shared object: src/libintersect.so compiled from src/intersect.hip
+<img src="Agent%20architecture%20diagram.png" alt="GatherPoint AI system architecture" width="100%">
 
 ## Key Endpoints
 
