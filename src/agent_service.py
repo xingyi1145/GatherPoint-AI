@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any
+
+import requests
 
 from react_meetup_agent_poc import build_agent
 from memory_service import load_group_profiles, normalize_profile
 
-try:
-    from test_retrieval import retrieve_user_context as _retrieve_user_context
-except Exception:
-    _retrieve_user_context = None
+
+RAG_SERVER_URL = os.getenv(
+    "GATHERPOINT_RAG_SERVER_URL",
+    "http://<CLOUD_IP>:8000",
+)
+RAG_RETRIEVE_PROFILES_URL = f"{RAG_SERVER_URL.rstrip('/')}/retrieve_profiles"
 
 
 # 1. Quick and easy logging setup
@@ -203,9 +208,9 @@ def retrieve_relevant_memories(
     """
     Retrieve long-term memory relevant to the current planning request.
 
-    This currently delegates to the local ChromaDB helper used by the RAG
-    prototype. If that helper is not available yet, the function falls back to
-    returning an empty list so the UI can still render safely.
+    This calls the remote GPU-backed RAG microservice. If the service is
+    unreachable or returns an invalid payload, the function falls back to an
+    empty list so the UI can still render safely.
 
     Args:
         group_id: Stable identifier of the active meetup group.
@@ -215,21 +220,40 @@ def retrieve_relevant_memories(
         A list of concise memory strings. Return an empty list when no relevant
         information exists; do not fail merely because a new group has no memory.
     """
-    if _retrieve_user_context is None:
-        # TODO: Replace this fallback with the production RAG module once the
-        # retrieval helper is moved out of src/test_retrieval.py.
-        return []
-
     try:
         query_text = f"group_id={group_id}\n{user_message}"
-        contexts = _retrieve_user_context(query_text)
-    except Exception:
+        response = requests.post(
+            RAG_RETRIEVE_PROFILES_URL,
+            json={"query": query_text},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException:
+        logger.exception(
+            "Remote RAG service request failed: %s",
+            RAG_RETRIEVE_PROFILES_URL,
+        )
+        return []
+    except ValueError:
+        logger.exception("Remote RAG service returned invalid JSON.")
         return []
 
-    if not contexts:
+    matches = payload.get("matches", [])
+
+    if not isinstance(matches, list) or not matches:
         return []
 
-    return [str(context).strip() for context in contexts if str(context).strip()]
+    contexts: list[str] = []
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+
+        document = str(match.get("document", "")).strip()
+        if document:
+            contexts.append(document)
+
+    return contexts
 
 
 # -----------------------------------------------------------------------------
