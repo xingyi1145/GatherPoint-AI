@@ -72,113 +72,47 @@ __global__ void reduce_center_kernel(
     atomicAdd(sum_lon, lons[idx]);
 }
 
-// 4. C-INTERFACE: Allows Python's ctypes to call this library
-extern "C" {
-    // Returns 0 on success, or a non-zero hipError_t code on failure so the
-    // Python/FastAPI caller can detect and report GPU faults instead of
-    // silently trusting a corrupted result (or crashing).
-    int calculate_center(
-        const float* h_lats, const float* h_lons, int size,
-        float* out_lat, float* out_lon)
-    {
-        if (size <= 0) {
-            return -1;
-        }
+extern "C" int calculate_center(const float* lats, const float* lons, int size, float* out_lat, float* out_lon) {
+    // 1. Allocate Device (GPU) Pointers for Inputs AND Outputs
+    float *d_lats, *d_lons, *d_out_lat, *d_out_lon;
+    
+    hipMalloc(&d_lats, size * sizeof(float));
+    hipMalloc(&d_lons, size * sizeof(float));
+    hipMalloc(&d_out_lat, sizeof(float)); // Allocate 1 float for Output
+    hipMalloc(&d_out_lon, sizeof(float)); // Allocate 1 float for Output
 
-        float *d_lats = nullptr, *d_lons = nullptr;
-        float *d_sum_lat = nullptr, *d_sum_lon = nullptr;
-        hipError_t err;
+    // 2. Initialize the Output accumulators to 0.0 on the Device
+    float zero = 0.0f;
+    hipMemcpy(d_out_lat, &zero, sizeof(float), hipMemcpyHostToDevice);
+    hipMemcpy(d_out_lon, &zero, sizeof(float), hipMemcpyHostToDevice);
 
-        err = hipMalloc(&d_lats, size * sizeof(float));
-        if (err != hipSuccess) return (int)err;
+    // 3. Copy Input arrays from Python (Host) to GPU (Device)
+    hipMemcpy(d_lats, lats, size * sizeof(float), hipMemcpyHostToDevice);
+    hipMemcpy(d_lons, lons, size * sizeof(float), hipMemcpyHostToDevice);
 
-        err = hipMalloc(&d_lons, size * sizeof(float));
-        if (err != hipSuccess) { hipFree(d_lats); return (int)err; }
+    // 4. Launch the Kernel (using Copilot's kernel name)
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (size + threadsPerBlock - 1) / threadsPerBlock;
+    hipLaunchKernelGGL(reduce_center_kernel, dim3(blocksPerGrid), dim3(threadsPerBlock), 0, 0, 
+                       d_lats, d_lons, size, d_out_lat, d_out_lon);
 
-        // Single-scalar accumulators: every thread must only ever atomicAdd
-        // into these, never index into them by thread id.
-        err = hipMalloc(&d_sum_lat, sizeof(float));
-        if (err != hipSuccess) { hipFree(d_lats); hipFree(d_lons); return (int)err; }
-
-        err = hipMalloc(&d_sum_lon, sizeof(float));
-        if (err != hipSuccess) {
-            hipFree(d_lats); hipFree(d_lons); hipFree(d_sum_lat);
-            return (int)err;
-        }
-
-        hipMemset(d_sum_lat, 0, sizeof(float));
-        hipMemset(d_sum_lon, 0, sizeof(float));
-
-        hipMemcpy(d_lats, h_lats, size * sizeof(float), hipMemcpyHostToDevice);
-        hipMemcpy(d_lons, h_lons, size * sizeof(float), hipMemcpyHostToDevice);
-
-        int threadsPerBlock = 256;
-        int blocksPerGrid = (size + threadsPerBlock - 1) / threadsPerBlock;
-
-        hipLaunchKernelGGL(reduce_center_kernel, dim3(blocksPerGrid), dim3(threadsPerBlock), 0, 0,
-                           d_lats, d_lons, size, d_sum_lat, d_sum_lon);
-
-        // Force host to wait for kernel completion and surface any
-        // launch/execution fault here instead of on a later, unrelated call.
-        err = hipDeviceSynchronize();
-        if (err != hipSuccess) {
-            hipFree(d_lats); hipFree(d_lons); hipFree(d_sum_lat); hipFree(d_sum_lon);
-            return (int)err;
-        }
-
-        float sum_lat = 0.0f, sum_lon = 0.0f;
-        hipMemcpy(&sum_lat, d_sum_lat, sizeof(float), hipMemcpyDeviceToHost);
-        hipMemcpy(&sum_lon, d_sum_lon, sizeof(float), hipMemcpyDeviceToHost);
-
-        hipFree(d_lats);
-        hipFree(d_lons);
-        hipFree(d_sum_lat);
-        hipFree(d_sum_lon);
-
-        *out_lat = sum_lat / size;
-        *out_lon = sum_lon / size;
-
-        return 0;
+    // 5. Synchronize to catch errors
+    hipError_t err = hipDeviceSynchronize();
+    if (err != hipSuccess) {
+        // Free memory before returning error to prevent leaks
+        hipFree(d_lats); hipFree(d_lons); hipFree(d_out_lat); hipFree(d_out_lon);
+        return (int)err; 
     }
 
-    void run_intersection(
-        const float* h_grid_lats, const float* h_grid_lons, int num_grids,
-        const float* h_user_lats, const float* h_user_lons, int num_users,
-        float max_radius_km, int* h_result_flags) 
-    {
-        // Pointers for GPU Memory
-        float *d_grid_lats, *d_grid_lons, *d_user_lats, *d_user_lons;
-        int *d_result_flags;
+    // 6. Copy the reduced results from the GPU back to Python's ctypes pointers
+    hipMemcpy(out_lat, d_out_lat, sizeof(float), hipMemcpyDeviceToHost);
+    hipMemcpy(out_lon, d_out_lon, sizeof(float), hipMemcpyDeviceToHost);
 
-        // Allocate VRAM on the Radeon GPU
-        hipMalloc(&d_grid_lats, num_grids * sizeof(float));
-        hipMalloc(&d_grid_lons, num_grids * sizeof(float));
-        hipMalloc(&d_user_lats, num_users * sizeof(float));
-        hipMalloc(&d_user_lons, num_users * sizeof(float));
-        hipMalloc(&d_result_flags, num_grids * sizeof(int));
+    // 7. Cleanup! (Crucial to prevent VRAM leaks)
+    hipFree(d_lats);
+    hipFree(d_lons);
+    hipFree(d_out_lat);
+    hipFree(d_out_lon);
 
-        // Copy data from RAM (Python) to VRAM (GPU)
-        hipMemcpy(d_grid_lats, h_grid_lats, num_grids * sizeof(float), hipMemcpyHostToDevice);
-        hipMemcpy(d_grid_lons, h_grid_lons, num_grids * sizeof(float), hipMemcpyHostToDevice);
-        hipMemcpy(d_user_lats, h_user_lats, num_users * sizeof(float), hipMemcpyHostToDevice);
-        hipMemcpy(d_user_lons, h_user_lons, num_users * sizeof(float), hipMemcpyHostToDevice);
-
-        // Define GPU Thread Blocks (256 threads per block)
-        int threadsPerBlock = 256;
-        int blocksPerGrid = (num_grids + threadsPerBlock - 1) / threadsPerBlock;
-
-        // Launch the Kernel!
-        hipLaunchKernelGGL(intersect_kernel, dim3(blocksPerGrid), dim3(threadsPerBlock), 0, 0, 
-                           d_grid_lats, d_grid_lons, num_grids, 
-                           d_user_lats, d_user_lons, num_users, 
-                           max_radius_km, d_result_flags);
-
-        // Copy the results back to Python RAM
-        hipMemcpy(h_result_flags, d_result_flags, num_grids * sizeof(int), hipMemcpyDeviceToHost);
-
-        // Free VRAM
-        hipFree(d_grid_lats); hipFree(d_grid_lons);
-        hipFree(d_user_lats); hipFree(d_user_lons);
-        hipFree(d_result_flags);
-    }
+    return 0; // Success
 }
