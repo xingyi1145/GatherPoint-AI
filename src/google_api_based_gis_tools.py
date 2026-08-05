@@ -158,7 +158,7 @@ def _calculate_remote_intersection(isochrones: list) -> dict:
                 'latitudes': latitudes,
                 'longitudes': longitudes,
             },
-            timeout=20,
+            timeout=30,
         )
         response.raise_for_status()
         payload = response.json()

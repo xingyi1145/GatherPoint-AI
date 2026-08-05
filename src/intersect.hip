@@ -60,31 +60,60 @@ __global__ void intersect_kernel(
 // exceed the number of scalar outputs (which is always exactly 1 each).
 __global__ void reduce_center_kernel(
     const float* lats, const float* lons, int size,
-    float* sum_lat, float* sum_lon)
+    float* sum_lat, float* sum_lon, int* sum_count)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int tid = threadIdx.x;
 
-    if (idx >= size) {
-        return;
+    __shared__ float shared_lat[256];
+    __shared__ float shared_lon[256];
+    __shared__ int shared_count[256];
+
+    if (idx < size) {
+        shared_lat[tid] = lats[idx];
+        shared_lon[tid] = lons[idx];
+        shared_count[tid] = 1;
+    } else {
+        shared_lat[tid] = 0.0f;
+        shared_lon[tid] = 0.0f;
+        shared_count[tid] = 0;
     }
 
-    atomicAdd(sum_lat, lats[idx]);
-    atomicAdd(sum_lon, lons[idx]);
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_lat[tid] += shared_lat[tid + stride];
+            shared_lon[tid] += shared_lon[tid + stride];
+            shared_count[tid] += shared_count[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        atomicAdd(sum_lat, shared_lat[0]);
+        atomicAdd(sum_lon, shared_lon[0]);
+        atomicAdd(sum_count, shared_count[0]);
+    }
 }
 
 extern "C" int calculate_center(const float* lats, const float* lons, int size, float* out_lat, float* out_lon) {
     // 1. Allocate Device (GPU) Pointers for Inputs AND Outputs
-    float *d_lats, *d_lons, *d_out_lat, *d_out_lon;
+    float *d_lats, *d_lons, *d_sum_lat, *d_sum_lon;
+    int *d_sum_count;
     
     hipMalloc(&d_lats, size * sizeof(float));
     hipMalloc(&d_lons, size * sizeof(float));
-    hipMalloc(&d_out_lat, sizeof(float)); // Allocate 1 float for Output
-    hipMalloc(&d_out_lon, sizeof(float)); // Allocate 1 float for Output
+    hipMalloc(&d_sum_lat, sizeof(float));
+    hipMalloc(&d_sum_lon, sizeof(float));
+    hipMalloc(&d_sum_count, sizeof(int));
 
     // 2. Initialize the Output accumulators to 0.0 on the Device
     float zero = 0.0f;
-    hipMemcpy(d_out_lat, &zero, sizeof(float), hipMemcpyHostToDevice);
-    hipMemcpy(d_out_lon, &zero, sizeof(float), hipMemcpyHostToDevice);
+    int zero_count = 0;
+    hipMemcpy(d_sum_lat, &zero, sizeof(float), hipMemcpyHostToDevice);
+    hipMemcpy(d_sum_lon, &zero, sizeof(float), hipMemcpyHostToDevice);
+    hipMemcpy(d_sum_count, &zero_count, sizeof(int), hipMemcpyHostToDevice);
 
     // 3. Copy Input arrays from Python (Host) to GPU (Device)
     hipMemcpy(d_lats, lats, size * sizeof(float), hipMemcpyHostToDevice);
@@ -94,25 +123,39 @@ extern "C" int calculate_center(const float* lats, const float* lons, int size, 
     int threadsPerBlock = 256;
     int blocksPerGrid = (size + threadsPerBlock - 1) / threadsPerBlock;
     hipLaunchKernelGGL(reduce_center_kernel, dim3(blocksPerGrid), dim3(threadsPerBlock), 0, 0, 
-                       d_lats, d_lons, size, d_out_lat, d_out_lon);
+                       d_lats, d_lons, size, d_sum_lat, d_sum_lon, d_sum_count);
 
     // 5. Synchronize to catch errors
     hipError_t err = hipDeviceSynchronize();
     if (err != hipSuccess) {
         // Free memory before returning error to prevent leaks
-        hipFree(d_lats); hipFree(d_lons); hipFree(d_out_lat); hipFree(d_out_lon);
+        hipFree(d_lats); hipFree(d_lons); hipFree(d_sum_lat); hipFree(d_sum_lon); hipFree(d_sum_count);
         return (int)err; 
     }
 
     // 6. Copy the reduced results from the GPU back to Python's ctypes pointers
-    hipMemcpy(out_lat, d_out_lat, sizeof(float), hipMemcpyDeviceToHost);
-    hipMemcpy(out_lon, d_out_lon, sizeof(float), hipMemcpyDeviceToHost);
+    float sum_lat = 0.0f;
+    float sum_lon = 0.0f;
+    int count = 0;
+
+    hipMemcpy(&sum_lat, d_sum_lat, sizeof(float), hipMemcpyDeviceToHost);
+    hipMemcpy(&sum_lon, d_sum_lon, sizeof(float), hipMemcpyDeviceToHost);
+    hipMemcpy(&count, d_sum_count, sizeof(int), hipMemcpyDeviceToHost);
+
+    if (count == 0) {
+        *out_lat = 0.0f;
+        *out_lon = 0.0f;
+    } else {
+        *out_lat = sum_lat / count;
+        *out_lon = sum_lon / count;
+    }
 
     // 7. Cleanup! (Crucial to prevent VRAM leaks)
     hipFree(d_lats);
     hipFree(d_lons);
-    hipFree(d_out_lat);
-    hipFree(d_out_lon);
+    hipFree(d_sum_lat);
+    hipFree(d_sum_lon);
+    hipFree(d_sum_count);
 
     return 0; // Success
 }

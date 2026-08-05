@@ -62,6 +62,7 @@ def _load_embedder(device: str) -> SentenceTransformer:
 	candidates = [
 		LOCAL_MODEL_PATH,
 		os.path.join(BASE_DIR, "all-MiniLM-L6-v2"),
+		os.path.join(os.path.dirname(REPO_DIR), "all-MiniLM-L6-v2"),
 	]
 
 	for model_path in candidates:
