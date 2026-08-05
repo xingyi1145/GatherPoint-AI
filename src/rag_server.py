@@ -14,14 +14,19 @@ from sentence_transformers import SentenceTransformer
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 BASE_DIR = os.path.dirname(__file__)
+REPO_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 CHROMA_PATH = os.getenv(
 	"GATHERPOINT_CHROMA_PATH",
-	os.path.abspath(os.path.join(BASE_DIR, "..", "gatherpoint_db")),
+	os.path.abspath(os.path.join(REPO_DIR, "gatherpoint_db")),
 )
 COLLECTION_NAME = os.getenv("GATHERPOINT_CHROMA_COLLECTION", "friend_profiles")
 LIBINTERSECT_PATH = os.getenv(
 	"GATHERPOINT_LIBINTERSECT_PATH",
 	os.path.join(BASE_DIR, "libintersect.so"),
+)
+LOCAL_MODEL_PATH = os.getenv(
+	"GATHERPOINT_EMBEDDER_PATH",
+	os.path.join(REPO_DIR, "all-MiniLM-L6-v2"),
 )
 TOP_K = 3
 
@@ -49,13 +54,34 @@ def _load_intersection_library() -> ctypes.CDLL:
 	return library
 
 
+def _load_embedder(device: str) -> SentenceTransformer:
+	# Prefer local files and avoid any Hugging Face network access by default.
+	os.environ.setdefault("HF_HUB_OFFLINE", "1")
+	os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+	candidates = [
+		LOCAL_MODEL_PATH,
+		os.path.join(BASE_DIR, "all-MiniLM-L6-v2"),
+	]
+
+	for model_path in candidates:
+		if os.path.isdir(model_path):
+			return SentenceTransformer(model_path, device=device)
+
+	raise RuntimeError(
+		"Embedding model directory not found. Expected one of: "
+		f"{candidates}. Place the all-MiniLM-L6-v2 folder on disk or set "
+		"GATHERPOINT_EMBEDDER_PATH to its absolute path."
+	)
+
+
 def _build_app() -> FastAPI:
 	app = FastAPI(title="GatherPoint RAG Service")
 
 	device = "cuda" if torch.cuda.is_available() else "cpu"
 	client = chromadb.PersistentClient(path=CHROMA_PATH)
 	collection = client.get_or_create_collection(name=COLLECTION_NAME)
-	embedder = SentenceTransformer(MODEL_NAME, device=device)
+	embedder = _load_embedder(device=device)
 	try:
 		intersection_library = _load_intersection_library()
 	except OSError:
