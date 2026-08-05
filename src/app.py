@@ -304,9 +304,17 @@ def initialize_state() -> None:
         # Contains normalized Profile records returned by the latest agent turn.
         st.session_state.loaded_profiles = []
 
+    if "active_profiles" not in st.session_state:
+        # Sidebar source of truth for currently active profile context.
+        st.session_state.active_profiles = []
+
     if "retrieved_memories" not in st.session_state:
         # Contains relevant long-term memory/RAG snippets for the latest turn.
         st.session_state.retrieved_memories = []
+
+    if "active_memories" not in st.session_state:
+        # Sidebar source of truth for currently active retrieved memory.
+        st.session_state.active_memories = []
 
     if "last_answer" not in st.session_state:
         # Used by the Live Plan panel to indicate whether a response exists.
@@ -323,6 +331,7 @@ def reset_conversation() -> None:
     """
     st.session_state.conversation = new_conversation()
     st.session_state.retrieved_memories = []
+    st.session_state.active_memories = []
     st.session_state.last_answer = ""
 
 
@@ -330,7 +339,9 @@ def sync_group_profiles() -> None:
     """
     Load the visible profile cards for the active group.
     """
-    st.session_state.loaded_profiles = load_group_profiles(st.session_state.group_id)
+    profiles = load_group_profiles(st.session_state.group_id)
+    st.session_state.loaded_profiles = profiles
+    st.session_state.active_profiles = profiles
 
 
 def render_sidebar_profile_line(raw_profile: dict) -> None:
@@ -382,15 +393,35 @@ with st.sidebar:
     st.divider()
     st.subheader("Saved Profiles")
 
-    if st.session_state.loaded_profiles:
-        for raw_profile in st.session_state.loaded_profiles:
-            render_sidebar_profile_line(raw_profile)
+    if st.session_state.active_profiles:
+        for raw_profile in st.session_state.active_profiles:
+            profile = normalize_profile(raw_profile)
+            with st.expander(f"{profile['name']}'s Profile", expanded=False):
+                st.write(f"Location: {profile['address']}")
+                st.write(f"Transit Mode: {profile['transit_mode']}")
+                st.write(f"Budget: {profile['budget']}")
+
+                dietary = ", ".join(profile["dietary_restrictions"]) or "None"
+                interests = ", ".join(profile["interests"]) or "Not specified"
+                availability = ", ".join(
+                    f"{day}: {status}"
+                    for day, status in profile["availability"].items()
+                ) or "Not specified"
+
+                st.write(f"Dietary Restrictions: {dietary}")
+                st.write(f"Interests: {interests}")
+                st.write(f"Availability: {availability}")
     else:
         st.caption("No saved profiles for this group.")
 
     st.divider()
     st.subheader("Local Memory")
-    st.caption("Memory: Active")
+
+    if st.session_state.active_memories:
+        for index, memory in enumerate(st.session_state.active_memories, start=1):
+            st.markdown(f"{index}. {memory}")
+    else:
+        st.caption("No relevant memory retrieved yet.")
 
     st.divider()
     st.subheader("System Status")
@@ -451,6 +482,9 @@ if prompt:
                 user_message=prompt,
                 conversation=st.session_state.conversation,
             )
+
+            st.session_state.active_profiles = profiles
+            st.session_state.active_memories = memories
 
             st.session_state.loaded_profiles = profiles
             st.session_state.retrieved_memories = memories

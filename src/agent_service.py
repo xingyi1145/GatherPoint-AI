@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from react_meetup_agent_poc import build_agent
@@ -22,6 +23,49 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+
+def _extract_forced_final_answer(text: str) -> str | None:
+    """
+    Recover a valid final answer when the model hallucinates an action name.
+
+    Some local models emit:
+    - Action: Final Answer
+    - Action Input: <summary>
+
+    LangChain treats that as an invalid tool and keeps looping. This helper
+    detects the pattern and extracts the intended user-facing summary.
+    """
+    if not text:
+        return None
+
+    direct_final = re.search(
+        r"(?is)final\s*answer\s*:\s*(.+)$",
+        text,
+    )
+    if direct_final:
+        candidate = direct_final.group(1).strip()
+        if candidate:
+            return candidate
+
+    action_match = re.search(
+        r"(?is)action\s*:\s*(final\s*answer|final_answer)\b",
+        text,
+    )
+    if not action_match:
+        return None
+
+    action_input_match = re.search(
+        r"(?is)action\s*input\s*:\s*(.+?)(?:\n\s*(?:observation|thought|action|final\s*answer)\s*:|$)",
+        text,
+    )
+    if action_input_match:
+        candidate = action_input_match.group(1).strip().strip('"').strip("'")
+        if candidate:
+            return candidate
+
+    tail_after_action = text[action_match.end():].strip()
+    return tail_after_action or None
 
 
 # -----------------------------------------------------------------------------
@@ -236,6 +280,7 @@ def _build_planning_prompt(
         "  relaxation, such as a longer travel limit, a different venue type, or a date.",
         "- Keep the final answer concise and user-facing.",
         "- When recommendations are available, explain the top choices and why they fit.",
+        "- CRITICAL STOPPING RULE: Once you receive the list of places, DO NOT write 'Action: Final Answer'. You must immediately output the exact text 'Final Answer: ' followed directly by your friendly summary.",
         "",
         "Active group ID:",
         group_id,
@@ -264,17 +309,51 @@ def _invoke_local_planning_agent(
     try:
         logger.debug("Invoking local planning agent.")
         executor = build_agent()
+        # Request intermediate steps so we can recover malformed stop outputs.
+        executor.return_intermediate_steps = True
         result = executor.invoke({"input": prompt})
         logger.debug("Raw agent invocation payload: %s", result)
     except Exception as e:
         # Catch errors gracefully so the UI doesn't completely break
         logger.exception("Local agent invocation failed.")
+        recovered = _extract_forced_final_answer(str(e))
+        if recovered:
+            logger.warning(
+                "Recovered final answer from malformed action in exception path."
+            )
+            return recovered
         raise RuntimeError(f"Local agent error: {str(e)}")
 
     if isinstance(result, dict):
         output = str(result.get("output", "")).strip()
+
+        intermediate_steps = result.get("intermediate_steps", [])
+        for step in reversed(intermediate_steps):
+            if not isinstance(step, tuple) or len(step) < 1:
+                continue
+
+            action = step[0]
+            tool_name = str(getattr(action, "tool", "")).strip()
+
+            if tool_name in {"Final Answer", "final_answer"}:
+                tool_input = str(getattr(action, "tool_input", "")).strip()
+                if tool_input:
+                    logger.warning(
+                        "Recovered final answer from hallucinated tool action '%s'.",
+                        tool_name,
+                    )
+                    return tool_input
+
+        recovered_from_output = _extract_forced_final_answer(output)
+        if recovered_from_output:
+            logger.warning("Recovered final answer from raw model output text.")
+            return recovered_from_output
     else:
         output = str(result).strip()
+        recovered_from_output = _extract_forced_final_answer(output)
+        if recovered_from_output:
+            logger.warning("Recovered final answer from raw non-dict output text.")
+            return recovered_from_output
 
     if not output:
         raise RuntimeError("Local agent returned an empty response.")
