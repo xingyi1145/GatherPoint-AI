@@ -10,6 +10,18 @@ from langchain_openai import ChatOpenAI
 
 from google_api_based_gis_tools import full_pipeline
 
+import logging
+
+# 1. Quick and easy logging setup
+logging.basicConfig(
+    level=logging.DEBUG, # Captures everything
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("agent_debug.log"), # Writes to a file you can track
+        logging.StreamHandler()                 # Also prints to your terminal
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def timing_measurement(label: str, name: str):
     def decorator(func):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any
 
 from react_meetup_agent_poc import build_agent
@@ -9,6 +11,61 @@ try:
     from test_retrieval import retrieve_user_context as _retrieve_user_context
 except Exception:
     _retrieve_user_context = None
+
+
+# 1. Quick and easy logging setup
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("agent_debug.log"),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger(__name__)
+
+
+def _extract_forced_final_answer(text: str) -> str | None:
+    """
+    Recover a valid final answer when the model hallucinates an action name.
+
+    Some local models emit:
+    - Action: Final Answer
+    - Action Input: <summary>
+
+    LangChain treats that as an invalid tool and keeps looping. This helper
+    detects the pattern and extracts the intended user-facing summary.
+    """
+    if not text:
+        return None
+
+    direct_final = re.search(
+        r"(?is)final\s*answer\s*:\s*(.+)$",
+        text,
+    )
+    if direct_final:
+        candidate = direct_final.group(1).strip()
+        if candidate:
+            return candidate
+
+    action_match = re.search(
+        r"(?is)action\s*:\s*(final\s*answer|final_answer)\b",
+        text,
+    )
+    if not action_match:
+        return None
+
+    action_input_match = re.search(
+        r"(?is)action\s*input\s*:\s*(.+?)(?:\n\s*(?:observation|thought|action|final\s*answer)\s*:|$)",
+        text,
+    )
+    if action_input_match:
+        candidate = action_input_match.group(1).strip().strip('"').strip("'")
+        if candidate:
+            return candidate
+
+    tail_after_action = text[action_match.end():].strip()
+    return tail_after_action or None
 
 
 # -----------------------------------------------------------------------------
@@ -179,95 +236,124 @@ def retrieve_relevant_memories(
 # Local Agent Integration
 # -----------------------------------------------------------------------------
 def _build_planning_prompt(
-    user_message: str, 
-    **kwargs
+    group_id: str,
+    user_message: str,
+    conversation: dict[str, Any],
+    profiles: list[dict[str, Any]],
+    memories: list[str],
 ) -> str:
     """
-    Construct the final prompt to send to the local agent.
+    Construct the bounded local-LLM prompt for one planning turn.
+
+    The prompt combines trusted Profile data, retrieved memory, compact
+    conversation history, and the latest request. To reduce instruction
+    override in smaller local models, optional context sections are injected
+    only when real data exists, and the latest user request is placed last.
+
+    Args:
+        group_id: Active group identifier.
+        user_message: Latest request from the user.
+        conversation: Current compact conversation state.
+        profiles: Normalized Profiles loaded for the group.
+        memories: Relevant retrieved-memory snippets.
+
+    Returns:
+        A prompt string ready to send to a local planning agent or LLM.
     """
-    # ==========================================
-    # HACKATHON BYPASS: 
-    # Ignore RAG, Memory, and System Prompts for now.
-    # Directly route the raw user input to LangChain.
-    # The **kwargs absorbs group_id, profiles, memories, etc.
-    # ==========================================
-    
-    return user_message
+    profile_context = _format_profile_context(profiles)
+    memory_context = _format_memory_context(memories)
+    conversation_context = _format_conversation_context(conversation)
 
+    sections: list[str] = [
+        "You are GatherPoint, a local-first group meetup planning assistant.",
+        "",
+        "Your job is to recommend practical meetup options that work fairly for the",
+        "whole group. Use trusted Friend Profiles, retrieved group memory, recent",
+        "conversation, and GIS tool results when available.",
+        "",
+        "Rules:",
+        "- Do not invent locations, budgets, dietary needs, schedules, or travel modes.",
+        "- Treat explicit user instructions in the latest request as the highest priority.",
+        "- Respect dietary restrictions and identify conflicts or missing information.",
+        "- Prefer fair travel-time tradeoffs instead of optimizing only for one person.",
+        "- If no practical common meeting area exists, explain why and suggest a concrete",
+        "  relaxation, such as a longer travel limit, a different venue type, or a date.",
+        "- Keep the final answer concise and user-facing.",
+        "- When recommendations are available, explain the top choices and why they fit.",
+        "- CRITICAL STOPPING RULE: Once you receive the list of places, DO NOT write 'Action: Final Answer'. You must immediately output the exact text 'Final Answer: ' followed directly by your friendly summary.",
+        "",
+        "Active group ID:",
+        group_id,
+    ]
 
-#def _build_planning_prompt(
-#   group_id: str,
-#    user_message: str,
-#    conversation: dict[str, Any],
-#    profiles: list[dict[str, Any]],
-#    memories: list[str],
-#    ) -> str:
-#    """
-#    Construct the bounded local-LLM prompt for one planning turn.
-#
-#    The prompt combines trusted Profile data, retrieved memory, compact
-#    conversation history, and the latest request. It instructs the downstream
-#    agent not to fabricate user information and to explain constraint tradeoffs.
-#
-#    Args:
-#        group_id: Active group identifier.
-#        user_message: Latest request from the user.
-#        conversation: Current compact conversation state.
-#        profiles: Normalized Profiles loaded for the group.
-#        memories: Relevant retrieved-memory snippets.
-#
-#    Returns:
-#        A prompt string ready to send to a local planning agent or LLM.
-#    """
-#    profile_context = _format_profile_context(profiles)
-#    memory_context = _format_memory_context(memories)
-#    conversation_context = _format_conversation_context(conversation)
-#
-#    return f"""
-#You are GatherPoint, a local-first group meetup planning assistant.
-#
-#Your job is to recommend practical meetup options that work fairly for the
-#whole group. Use trusted Friend Profiles, retrieved group memory, recent
-#conversation, and GIS tool results when available.
-#
-#Rules:
-#- Do not invent locations, budgets, dietary needs, schedules, or travel modes.
-#- Treat explicit user instructions in the latest request as the highest priority.
-#- Respect dietary restrictions and identify conflicts or missing information.
-#- Prefer fair travel-time tradeoffs instead of optimizing only for one person.
-#- If no practical common meeting area exists, explain why and suggest a concrete
-#  relaxation, such as a longer travel limit, a different venue type, or a date.
-#- Keep the final answer concise and user-facing.
-#- When recommendations are available, explain the top choices and why they fit.
-#
-#Active group ID:
-#{group_id}
-#
-#{profile_context}
-#
-#{memory_context}
-#
-#{conversation_context}
-#
-#Latest user request:
-#{user_message}
-#""".strip()
+    if profile_context:
+        sections.extend(["", profile_context])
+
+    if memory_context:
+        sections.extend(["", memory_context])
+
+    sections.extend([
+        "",
+        conversation_context,
+        "",
+        "Latest user request:",
+        user_message,
+    ])
+
+    return "\n".join(sections).strip()
 
 
 def _invoke_local_planning_agent(
     prompt: str,
 ) -> str:
     try:
+        logger.debug("Invoking local planning agent.")
         executor = build_agent()
+        # Request intermediate steps so we can recover malformed stop outputs.
+        executor.return_intermediate_steps = True
         result = executor.invoke({"input": prompt})
+        logger.debug("Raw agent invocation payload: %s", result)
     except Exception as e:
         # Catch errors gracefully so the UI doesn't completely break
+        logger.exception("Local agent invocation failed.")
+        recovered = _extract_forced_final_answer(str(e))
+        if recovered:
+            logger.warning(
+                "Recovered final answer from malformed action in exception path."
+            )
+            return recovered
         raise RuntimeError(f"Local agent error: {str(e)}")
 
     if isinstance(result, dict):
         output = str(result.get("output", "")).strip()
+
+        intermediate_steps = result.get("intermediate_steps", [])
+        for step in reversed(intermediate_steps):
+            if not isinstance(step, tuple) or len(step) < 1:
+                continue
+
+            action = step[0]
+            tool_name = str(getattr(action, "tool", "")).strip()
+
+            if tool_name in {"Final Answer", "final_answer"}:
+                tool_input = str(getattr(action, "tool_input", "")).strip()
+                if tool_input:
+                    logger.warning(
+                        "Recovered final answer from hallucinated tool action '%s'.",
+                        tool_name,
+                    )
+                    return tool_input
+
+        recovered_from_output = _extract_forced_final_answer(output)
+        if recovered_from_output:
+            logger.warning("Recovered final answer from raw model output text.")
+            return recovered_from_output
     else:
         output = str(result).strip()
+        recovered_from_output = _extract_forced_final_answer(output)
+        if recovered_from_output:
+            logger.warning("Recovered final answer from raw non-dict output text.")
+            return recovered_from_output
 
     if not output:
         raise RuntimeError("Local agent returned an empty response.")
@@ -293,22 +379,20 @@ def run_agent_turn(
     if not user_message.strip():
         raise RuntimeError("Please enter a meetup-planning request.")
 
+    logger.info("--- NEW TURN STARTED ---")
+    logger.info("Group ID: %s", group_id)
+    logger.info("User Message: %s", user_message)
+
     # 1. Load persistent Profile data
     raw_profiles = load_group_profiles(group_id)
     profiles = [normalize_profile(profile) for profile in raw_profiles]
-
-    # ==========================================
-    # BUG FIX: The hardcoded `if not profiles:` block has been deleted.
-    # We now let the raw user input fall through directly to the LLM 
-    # so it can parse the locations you typed in the chat!
-    # ==========================================
+    logger.debug("Loaded profile count: %d", len(profiles))
 
     # 2. Retrieve only memory relevant to this request
     memories = retrieve_relevant_memories(group_id, user_message)
+    logger.debug("Retrieved memory count: %d", len(memories))
 
     # 3. Build a single bounded context block for the downstream local agent.
-    # (Note: If you are still using the "Direct Route Bypass" from our previous 
-    # debugging step, this will just return the raw user_message).
     planning_prompt = _build_planning_prompt(
         group_id=group_id,
         user_message=user_message,
@@ -316,15 +400,20 @@ def run_agent_turn(
         profiles=profiles,
         memories=memories,
     )
+    logger.debug("LLM Prompt:\n%s", planning_prompt)
 
     # 4. Call the local model/agent.
     answer = _invoke_local_planning_agent(planning_prompt)
+    logger.info("LLM Raw Response: %s", answer)
 
     if not answer or not answer.strip():
+        logger.warning("Agent returned an empty response.")
         raise RuntimeError(
             "The local planning agent returned an empty response. "
             "Please check the model endpoint and agent integration."
         )
+
+    logger.info("Agent successfully reached stopping condition.")
 
     # 5. app.py requires this exact tuple shape.
     return answer.strip(), profiles, memories
