@@ -13,7 +13,7 @@ from memory_service import load_group_profiles, normalize_profile
 
 RAG_SERVER_URL = os.getenv(
     "GATHERPOINT_RAG_SERVER_URL",
-    "http://<CLOUD_IP>:8000",
+    "http://127.0.0.1:8000",
 )
 RAG_RETRIEVE_PROFILES_URL = f"{RAG_SERVER_URL.rstrip('/')}/retrieve_profiles"
 

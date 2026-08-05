@@ -40,7 +40,8 @@ def _load_intersection_library() -> ctypes.CDLL:
 		ctypes.POINTER(ctypes.c_float),
 		ctypes.POINTER(ctypes.c_float),
 	]
-	library.calculate_center.restype = None
+	# calculate_center returns 0 on success, or a non-zero hipError_t code.
+	library.calculate_center.restype = ctypes.c_int
 	return library
 
 
@@ -119,7 +120,7 @@ def _build_app() -> FastAPI:
 		out_lon = ctypes.c_float()
 
 		try:
-			intersection_library.calculate_center(
+			status = intersection_library.calculate_center(
 				lat_array,
 				lon_array,
 				size,
@@ -131,6 +132,12 @@ def _build_app() -> FastAPI:
 				status_code=500,
 				detail=f"Intersection library call failed: {exc}",
 			) from exc
+
+		if status != 0:
+			raise HTTPException(
+				status_code=500,
+				detail=f"HIP kernel failed with error code {status}",
+			)
 
 		return {
 			"latitude": float(out_lat.value),
