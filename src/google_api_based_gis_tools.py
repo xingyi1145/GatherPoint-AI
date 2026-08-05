@@ -125,6 +125,69 @@ def _point_in_polygon(point, polygon):
 # -------------------- Isochrone API Calls --------------------
 
 ISOCHRONE_API_URL = "https://isochrones.googleapis.com/v1/isochrones:generate"
+INTERSECTION_API_URL = os.getenv(
+    "GATHERPOINT_INTERSECTION_API_URL",
+    "http://127.0.0.1:8000/calculate_intersection",
+)
+
+
+def _flatten_isochrone_coordinates(isochrones: list) -> tuple[list[float], list[float]]:
+    """Flatten isochrone polygon coordinates for remote intersection calculation."""
+    latitudes: list[float] = []
+    longitudes: list[float] = []
+
+    for isochrone in isochrones:
+        for lat, lng in isochrone.get('polygon_coords', []):
+            latitudes.append(float(lat))
+            longitudes.append(float(lng))
+
+    return latitudes, longitudes
+
+
+def _calculate_remote_intersection(isochrones: list) -> dict:
+    """Offload intersection-center computation to the GPU microservice."""
+    latitudes, longitudes = _flatten_isochrone_coordinates(isochrones)
+
+    if not latitudes or not longitudes:
+        return {'intersection_valid': False}
+
+    try:
+        response = requests.post(
+            INTERSECTION_API_URL,
+            json={
+                'latitudes': latitudes,
+                'longitudes': longitudes,
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Intersection microservice request failed: {exc}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Intersection microservice returned non-JSON response") from exc
+
+    try:
+        center_lat = float(payload['latitude'])
+        center_lng = float(payload['longitude'])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "Intersection microservice response missing latitude/longitude"
+        ) from exc
+
+    search_radius_km = min(
+        (float(iso.get('radius_km', 0.0)) for iso in isochrones),
+        default=0.0,
+    )
+
+    return {
+        'intersection_centroid': (center_lat, center_lng),
+        'intersection_radius_km': search_radius_km,
+        'intersection_valid': True,
+        'combined_methods': list({iso['method'] for iso in isochrones}),
+    }
 
 def preProcess(user_enters: list) -> list:
     """
@@ -292,88 +355,21 @@ def getIsochrone(start_point: dict, method: str,
 @baseline_measurement("[GIS MATH]", "getCommon")
 def getCommon(isochrones: list) -> dict:
     """
-    Compute the intersection area of all isochrones (using a simple grid sampling method, no shapely dependency).
+    Compute the optimal meeting center of all isochrones via the remote GPU service.
     Parameters:
         isochrones: list of results from getIsochrone()
     Returns:
         {
-            'intersection_centroid': (lat, lng),  # Centroid of the intersection area
-            'intersection_radius_km': float,       # Coverage radius of the intersection area
-            'intersection_valid': bool,            # Whether a non-empty intersection exists
-            'intersection_polygons': [polygon_coords, ...], # List of original polygons (for downstream filtering)
-            'combined_methods': list               # Deduplicated list of travel modes
+            'intersection_centroid': (lat, lng),
+            'intersection_radius_km': float,
+            'intersection_valid': bool,
+            'combined_methods': list
         }
     """
     if not isochrones:
         return {'intersection_valid': False}
-    
-    # Collect all polygons and travel modes
-    polygons = [iso['polygon_coords'] for iso in isochrones]
-    methods = [iso['method'] for iso in isochrones]
-    
-    # ---- Grid sampling to approximate intersection ----
-    # 1. Determine the bounding box of all polygons (lat/lng extents)
-    all_lats = []
-    all_lngs = []
-    for poly in polygons:
-        for lat, lng in poly:
-            all_lats.append(lat)
-            all_lngs.append(lng)
-    
-    min_lat, max_lat = min(all_lats), max(all_lats)
-    min_lng, max_lng = min(all_lngs), max(all_lngs)
-    
-    # 2. Sample uniformly within the bounding box, test which points lie inside all polygons
-    # Sampling density: ~50x50 grid (adjustable based on precision requirements)
-    grid_size = 50
-    step_lat = (max_lat - min_lat) / grid_size if grid_size > 0 else 0.001
-    step_lng = (max_lng - min_lng) / grid_size if grid_size > 0 else 0.001
-    
-    intersection_points = []
-    
-    for i in range(grid_size + 1):
-        lat = min_lat + i * step_lat
-        for j in range(grid_size + 1):
-            lng = min_lng + j * step_lng
-            point = (lat, lng)
-            
-            # Check if the point lies inside all polygons
-            in_all = True
-            for poly in polygons:
-                if not _point_in_polygon(point, poly):
-                    in_all = False
-                    break
-            
-            if in_all:
-                intersection_points.append(point)
-    
-    if not intersection_points:
-        return {
-            'intersection_valid': False,
-            'intersection_polygons': polygons,
-            'combined_methods': list(set(methods))
-        }
-    
-    # 3. Compute the centroid of the intersection points
-    cent_lat = sum(p[0] for p in intersection_points) / len(intersection_points)
-    cent_lng = sum(p[1] for p in intersection_points) / len(intersection_points)
-    centroid = (cent_lat, cent_lng)
-    
-    # 4. Compute coverage radius (distance to the farthest intersection point)
-    max_dist = 0
-    for lat, lng in intersection_points:
-        d = _haversine(centroid[1], centroid[0], lng, lat)
-        if d > max_dist:
-            max_dist = d
-    
-    return {
-        'intersection_centroid': centroid,
-        'intersection_radius_km': max_dist,
-        'intersection_valid': True,
-        'intersection_point_count': len(intersection_points),
-        'intersection_polygons': polygons,
-        'combined_methods': list(set(methods))
-    }
+
+    return _calculate_remote_intersection(isochrones)
 
 
 @baseline_measurement("[API LATENCY]", "searching_meeting_places")
@@ -406,9 +402,8 @@ def getSuggestions(isochrones: list, placetype: str,
     
     center_lat, center_lng = common['intersection_centroid']
     radius_m = min(common['intersection_radius_km'] * 1000, 50000)  # convert to meters, max 50km
-    polygons = common['intersection_polygons']
     
-    # 2. Use Places API to search within the bounding circle of the intersection
+    # 2. Use Places API to search around the GPU-computed optimal center
     location = (center_lat, center_lng)
     search_radius = max(int(radius_m), 100)  # at least 100m
     
@@ -428,22 +423,11 @@ def getSuggestions(isochrones: list, placetype: str,
     if not candidates:
         return []
     
-    # 3. For each candidate, check if it truly lies within the intersection (precise filtering)
+    # 3. Format local venue candidates for downstream ranking and LLM use.
     filtered = []
     for poi in candidates:
         poi_lat = poi['geometry']['location']['lat']
         poi_lng = poi['geometry']['location']['lng']
-        poi_point = (poi_lat, poi_lng)
-        
-        # Check if point lies inside all isochrone polygons
-        in_all = True
-        for poly in polygons:
-            if not _point_in_polygon(poi_point, poly):
-                in_all = False
-                break
-        
-        if not in_all:
-            continue
         
         # Check rating
         rating = poi.get('rating', 0) or 0
