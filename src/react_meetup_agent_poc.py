@@ -67,9 +67,11 @@ def find_optimal_meeting_spots(input_json_str: str) -> str:
         place_type = args.get("place_type", "cafe")
         # Extract travel_time, default to 30m
         travel_time = args.get("travel_time", "30m")
+        # Optional: group preferences for semantic rerank (review matching)
+        preferences = args.get("preferences", "") or ""
 
         # Pass travel_time to the pipeline
-        result = full_pipeline(user_addresses, transport_modes, place_type, travel_time)
+        result = full_pipeline(user_addresses, transport_modes, place_type, travel_time, preferences=preferences)
 
         if isinstance(result, dict) and "error" in result:
              return f"Observation: API Error - {result['error']}. Please try adjusting your parameters, such as increasing the travel_time."
@@ -96,7 +98,8 @@ PROMPT = PromptTemplate.from_template(
     - Extract transport modes. Default to DRIVE if missing.
     - Extract the venue type (place_type).
     - Default travel_time is "30m".
-    - When calling find_optimal_meeting_spots, Action Input must be a valid JSON object. Example: {{"user_addresses": ["Union Station, Toronto"], "transport_modes": ["WALK"], "place_type": "cafe", "travel_time": "30m"}}
+    - If the user mentions dietary, budget, transit or other preferences (e.g. "Alice is vegan", "Bob hates spicy food", "low budget"), extract them into a short 'preferences' text field.
+    - When calling find_optimal_meeting_spots, Action Input must be a valid JSON object. Example: {{"user_addresses": ["Union Station, Toronto"], "transport_modes": ["WALK"], "place_type": "cafe", "travel_time": "30m", "preferences": "Alice is vegan and takes the subway. Bob hates spicy food."}}
     
     EDGE CASE HANDLING:
     - If you receive an Observation stating "no overlap" or that participants are too far apart, you MUST call the tool again and increase the "travel_time" (e.g., to "45m" or "1h").
@@ -144,7 +147,7 @@ def build_agent() -> AgentExecutor:
 def main() -> None:
     executor = build_agent()
 
-    prompt = "Alice is at Union Station, Toronto and will DRIVE. Bob is at Yonge and Bloor, Toronto and will DRIVE. Find a cafe for them to meet at."
+    prompt = "Alice is at Union Station, Toronto and will DRIVE. Bob is at Yonge and Bloor, Toronto and will DRIVE. Alice is vegan, Bob hates spicy food. Find a cafe for them to meet at."
 
     @timing_measurement("[LLM LATENCY]", "agent_reasoning")
     def run_agent():

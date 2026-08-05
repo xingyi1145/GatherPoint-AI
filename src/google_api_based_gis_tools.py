@@ -10,6 +10,11 @@ from math import radians, cos, sin, asin, sqrt, degrees, atan2
 from dotenv import load_dotenv
 
 load_dotenv()
+# Fallback: allow .env to live one directory above src/ (repo-adjacent layout).
+if not os.getenv("GOOGLE_API_KEY"):
+    _repo_dotenv = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+    if os.path.isfile(_repo_dotenv):
+        load_dotenv(_repo_dotenv)
 API_KEY = os.getenv("GOOGLE_API_KEY")
 if not API_KEY:
     raise RuntimeError("Google API key not found. Set GOOGLE_API_KEY in your .env file.")
@@ -586,6 +591,11 @@ def queryAI(suggestions: list) -> str:
         if travel_details:
             lines.append("   Individual travel times:")
             lines.extend(travel_details[:5])  # Show at most 5 individuals
+        # Semantic rerank info (present only after semantic_rerank ran).
+        if poi.get("match_score") is not None:
+            lines.append(f"   Preference match: {poi['match_score']}/10")
+            if poi.get("match_reason"):
+                lines.append(f"   Why: {poi['match_reason']}")
     
     lines.append("\n" + "=" * 60)
     lines.append("Based on the above information, considering convenience, ratings, and user preferences, ")
@@ -593,6 +603,174 @@ def queryAI(suggestions: list) -> str:
     lines.append("If you need to re-search (e.g., adjust time threshold, place type, or keyword), let me know.")
     
     return "\n".join(lines)
+
+
+# -------------------- Semantic Rerank (LLM preference matching) --------------------
+
+# Cloud vLLM endpoint (SSH-tunneled from local). Configurable via env vars.
+VLLM_BASE_URL = os.getenv("GATHERPOINT_VLLM_URL", "http://127.0.0.1:8001/v1").rstrip("/")
+VLLM_MODEL = os.getenv("GATHERPOINT_VLLM_MODEL", "gatherpoint-local")
+
+_RERANK_SYSTEM_PROMPT = (
+    "You are a meetup planner's semantic ranking engine. "
+    "Given a list of candidate venues (each with Google rating and review text) "
+    "and the group's preferences, score EVERY venue 1-10 on how well it matches "
+    "the preferences (10 = perfect match). Consider dietary needs and transit habits. "
+    "Do NOT rank by Google rating alone; review text matters more for preference fit. "
+    "Rules:\n"
+    "- Evaluate EVERY member's preference separately. In the reason, say exactly "
+    "which member(s) match and which do not.\n"
+    "- A venue that satisfies only one member gets a moderate score (3-7), not 10.\n"
+    "- If a venue has NO reviews, do not assume it is bad: give a neutral score "
+    "(3-7) based on its type and rating, and note 'no reviews' in the reason.\n"
+    "Return ONLY a JSON object, no markdown, with this exact shape:\n"
+    '{"scores": [{"name": str, "match_score": int, "reason": str}]}'
+)
+
+
+def _fetch_reviews(place_id: str, max_reviews: int = 3) -> list:
+    """
+    Fetch Google review texts for one place via Place Details.
+    Reviews are truncated to 200 chars each to keep the LLM prompt small
+    (cloud vLLM max_model_len = 4096). Returns [] on failure — never raises.
+    """
+    if not place_id:
+        return []
+    try:
+        details = gmaps.place(place_id, fields=["review"])
+        reviews = details.get("result", {}).get("reviews", []) or []
+        texts = [
+            str(r.get("text", "")).strip()[:200]
+            for r in reviews
+            if r.get("text")
+        ]
+        return texts[:max_reviews]
+    except Exception as e:
+        print(f"\u26a0 Place Details failed for {place_id}: {e}")
+        return []
+
+
+def _parse_rerank_scores(raw_text: str) -> dict:
+    """
+    Extract {name: {'match_score': int, 'reason': str}} from LLM output.
+    Tolerates markdown fences and surrounding prose. Returns {} on failure.
+    """
+    text = str(raw_text).strip()
+    # Strip markdown code fences.
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1:
+        print(f"\u26a0 semantic_rerank: no JSON object in LLM output: {text[:200]}")
+        return {}
+    try:
+        data = json.loads(text[start : end + 1])
+    except Exception as e:
+        print(f"\u26a0 semantic_rerank: JSON parse failed: {e}")
+        return {}
+    scores = {}
+    for item in data.get("scores", []) or []:
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        scores[name] = {
+            "match_score": int(item.get("match_score", 5)),
+            "reason": str(item.get("reason", "")).strip(),
+        }
+    return scores
+
+
+@baseline_measurement("[SEMANTIC RERANK]", "semantic_rerank")
+def semantic_rerank(venues: list, preferences: str,
+                    max_reviews: int = 3, timeout: int = 180) -> list:
+    """
+    Re-rank candidate POIs by matching Google review text against the group's
+    preferences using the cloud vLLM (AMD Radeon GPU via SSH tunnel).
+
+    Each venue gets 'match_score' (0-10) and 'match_reason' attached, then the
+    list is re-sorted by blended score = 0.6*rating + 0.7*match_score.
+
+    Never raises: on any failure (no reviews, LLM down, bad JSON) the input
+    order is returned unchanged so the main pipeline stays robust.
+
+    Set GATHERPOINT_RERANK=0 to disable (e.g. when the tunnel is down).
+    """
+    if os.getenv("GATHERPOINT_RERANK", "1") == "0":
+        return venues
+    if not venues or not preferences or not preferences.strip():
+        return venues
+
+    # 1. Attach review text to every venue (skipped on API failure).
+    for poi in venues:
+        poi["reviews"] = _fetch_reviews(poi.get("place_id", ""), max_reviews)
+
+    # 2. Build the LLM request.
+    candidates = [
+        {
+            "name": poi.get("name", "Unknown"),
+            "address": poi.get("address", ""),
+            "rating": float(poi.get("rating", 0) or 0),
+            "user_ratings_total": int(poi.get("user_ratings_total", 0) or 0),
+            "avg_travel_time": float(poi["avg_travel_time"]) if poi.get("avg_travel_time") is not None else None,
+            "reviews": poi.get("reviews", [])[:max_reviews],
+        }
+        for poi in venues
+    ]
+    user_prompt = (
+        "Group preferences:\n" + preferences.strip() + "\n\n"
+        "Candidate venues:\n" + json.dumps(candidates, ensure_ascii=False)
+    )
+    payload = {
+        "model": VLLM_MODEL,
+        "messages": [
+            {"role": "system", "content": _RERANK_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0,
+        "max_tokens": 400,
+    }
+
+    # 3. Call the cloud vLLM (SSH tunnel on 127.0.0.1:8001).
+    try:
+        resp = requests.post(
+            f"{VLLM_BASE_URL}/chat/completions", json=payload, timeout=timeout
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"]
+        scores = _parse_rerank_scores(content)
+        if not scores:
+            print("\u26a0 semantic_rerank: LLM returned no parseable scores; keeping order")
+            return venues
+    except requests.HTTPError as e:
+        body = ""
+        try:
+            body = resp.text[:500]
+        except Exception:
+            pass
+        print(f"\u26a0 semantic_rerank: LLM HTTP {e.response.status_code if e.response is not None else '?'}: {body}")
+        return venues
+    except Exception as e:
+        print(f"\u26a0 semantic_rerank: LLM call failed ({e}); keeping original order")
+        return venues
+
+    # 4. Attach scores and re-sort by blended fit.
+    for poi in venues:
+        s = scores.get(poi.get("name", ""))
+        poi["match_score"] = int(s["match_score"]) if s else 5
+        poi["match_reason"] = s["reason"] if s else ""
+
+    def rerank_key(poi):
+        avg_time = poi.get("avg_travel_time", float("inf"))
+        rating = (poi.get("rating", 0) or 0) / 5.0 * 10.0  # 0-10
+        match = poi.get("match_score", 5) or 5              # 0-10
+        blended = 0.6 * rating + 0.7 * match
+        total = poi.get("user_ratings_total", 0) or 0
+        return (avg_time, -blended, -total)
+
+    return sorted(venues, key=rerank_key)
 
 
 # -------------------- Advanced: Iterative Control --------------------
@@ -621,11 +799,19 @@ def adjustTimeThreshold(isochrones: list, new_time: str) -> list:
 def full_pipeline(user_addresses: list, transport_modes: list,
                   place_type: str, travel_time: str = "30m",
                   requirements: dict = None,
-                  top_n: int = 5) -> dict:
+                  top_n: int = 5,
+                  preferences: str = "") -> dict:
     """
-    Execute the full pipeline in one call: Preprocess → Isochrones → Intersection → POI Search → Sort → AI Text
+    Execute the full pipeline in one call: Preprocess → Isochrones → Intersection → POI Search → Sort → Semantic Rerank → AI Text
     Returns a dict with all intermediate results, suitable for flexible use by the Agent.
+
+    preferences: optional string describing the group's preferences (e.g.
+        "Alice is vegan and takes the subway. Bob hates spicy food and bikes.").
+        When provided, top_n candidates are re-ranked by semantic review matching
+        via the cloud vLLM. May also be supplied via requirements['preferences'].
     """
+    requirements = requirements or {}
+    preferences = preferences or str(requirements.get("preferences", "") or "")
     # 1. Preprocessing
     travel_time_seconds = parse_travel_time(travel_time)
     processed = preProcess(user_addresses)
@@ -656,7 +842,15 @@ def full_pipeline(user_addresses: list, transport_modes: list,
     
     # 5. Sort and take top_N
     sorted_places = sortPlaces(suggestions)[:top_n]
-    
+
+    # 5b. Semantic rerank: match Google review text against group preferences
+    #     using the cloud vLLM (AMD Radeon GPU). Falls back to original order.
+    reranked = False
+    if preferences.strip():
+        _before = [p.get("name") for p in sorted_places]
+        sorted_places = semantic_rerank(sorted_places, preferences)
+        reranked = [p.get("name") for p in sorted_places] != _before
+
     # 6. Generate AI-friendly text
     ai_text = queryAI(sorted_places)
     
@@ -667,7 +861,8 @@ def full_pipeline(user_addresses: list, transport_modes: list,
         "common_area": common,
         "suggestions": sorted_places,
         "ai_text": ai_text,
-        "suggestions_count": len(sorted_places)
+        "suggestions_count": len(sorted_places),
+        "reranked": reranked
     }
 
 
