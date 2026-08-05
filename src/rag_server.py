@@ -13,11 +13,15 @@ from sentence_transformers import SentenceTransformer
 
 
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-CHROMA_PATH = os.getenv("GATHERPOINT_CHROMA_PATH", "./gatherpoint_db")
+BASE_DIR = os.path.dirname(__file__)
+CHROMA_PATH = os.getenv(
+	"GATHERPOINT_CHROMA_PATH",
+	os.path.abspath(os.path.join(BASE_DIR, "..", "gatherpoint_db")),
+)
 COLLECTION_NAME = os.getenv("GATHERPOINT_CHROMA_COLLECTION", "friend_profiles")
 LIBINTERSECT_PATH = os.getenv(
 	"GATHERPOINT_LIBINTERSECT_PATH",
-	os.path.join(os.path.dirname(__file__), "libintersect.so"),
+	os.path.join(BASE_DIR, "libintersect.so"),
 )
 TOP_K = 3
 
@@ -50,7 +54,7 @@ def _build_app() -> FastAPI:
 
 	device = "cuda" if torch.cuda.is_available() else "cpu"
 	client = chromadb.PersistentClient(path=CHROMA_PATH)
-	collection = client.get_collection(name=COLLECTION_NAME)
+	collection = client.get_or_create_collection(name=COLLECTION_NAME)
 	embedder = SentenceTransformer(MODEL_NAME, device=device)
 	try:
 		intersection_library = _load_intersection_library()
