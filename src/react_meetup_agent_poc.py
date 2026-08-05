@@ -10,6 +10,18 @@ from langchain_openai import ChatOpenAI
 
 from google_api_based_gis_tools import full_pipeline
 
+import logging
+
+# 1. Quick and easy logging setup
+logging.basicConfig(
+    level=logging.DEBUG, # Captures everything
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("agent_debug.log"), # Writes to a file you can track
+        logging.StreamHandler()                 # Also prints to your terminal
+    ]
+)
+logger = logging.getLogger(__name__)
 
 def timing_measurement(label: str, name: str):
     def decorator(func):
@@ -123,7 +135,7 @@ def build_agent() -> AgentExecutor:
     return AgentExecutor(
         agent=agent,
         tools=tools,
-        verbose=True,
+        verbose=False,
         handle_parsing_errors=True,
         max_iterations=6,
     )
@@ -132,7 +144,7 @@ def build_agent() -> AgentExecutor:
 def main() -> None:
     executor = build_agent()
 
-    prompt = "Alice is at University of British Columbia, Vancouver and will DRIVE. Bob is at Yonge and Bloor, Toronto and will DRIVE. Find a cafe for them to meet at."
+    prompt = "Alice is at Union Station, Toronto and will DRIVE. Bob is at Yonge and Bloor, Toronto and will DRIVE. Find a cafe for them to meet at."
 
     @timing_measurement("[LLM LATENCY]", "agent_reasoning")
     def run_agent():
