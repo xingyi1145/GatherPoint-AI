@@ -11,6 +11,38 @@ from memory_service import (
 )
 
 
+def get_hardcoded_test_profiles() -> list[dict]:
+    """
+    Return fixed profiles used for UI testing and prompt-context injection.
+    """
+    return [
+        {
+            "name": "Alice",
+            "address": "Union Station",
+            "transit_mode": "Walk",
+            "budget": "Medium",
+            "dietary_restrictions": [],
+            "interests": ["Casual dining"],
+            "availability": {
+                "Friday": "Evening",
+                "Saturday": "Afternoon",
+            },
+        },
+        {
+            "name": "Bob",
+            "address": "Yonge and Bloor",
+            "transit_mode": "Drive",
+            "budget": "Medium",
+            "dietary_restrictions": [],
+            "interests": ["Coffee", "Restaurants"],
+            "availability": {
+                "Friday": "Evening",
+                "Sunday": "Afternoon",
+            },
+        },
+    ]
+
+
 # -----------------------------------------------------------------------------
 # Streamlit Page Configuration
 # -----------------------------------------------------------------------------
@@ -301,12 +333,12 @@ def initialize_state() -> None:
         st.session_state.conversation = new_conversation()
 
     if "loaded_profiles" not in st.session_state:
-        # Contains normalized Profile records returned by the latest agent turn.
-        st.session_state.loaded_profiles = []
+        # Seed UI testing profiles so they are immediately available to the LLM.
+        st.session_state.loaded_profiles = get_hardcoded_test_profiles()
 
     if "active_profiles" not in st.session_state:
         # Sidebar source of truth for currently active profile context.
-        st.session_state.active_profiles = []
+        st.session_state.active_profiles = get_hardcoded_test_profiles()
 
     if "retrieved_memories" not in st.session_state:
         # Contains relevant long-term memory/RAG snippets for the latest turn.

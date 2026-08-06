@@ -1,11 +1,15 @@
 # GatherPoint AI
-
+<img src="GatherPoint_Logo.png" alt="GatherPoint AI system architecture" width="100%">
 GatherPoint AI is a local-first meetup planning assistant with an AMD ROCm cloud backend for heavy compute.
 It combines:
 
 1. Profile and conversation-aware planning.
 2. RAG retrieval with ChromaDB + sentence-transformers.
 3. GPU-accelerated GIS center calculation via a HIP shared library.
+
+## Demo Video
+
+Watch the demo here: https://youtu.be/KXgSPnxtM-Q
 
 ## Architecture
 
